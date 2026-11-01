@@ -25,7 +25,7 @@
   .card.show { opacity: 1; }
   .card::after {
     content: ""; position: absolute; inset: -50%;
-    background-image: var(--grain); opacity: .12; mix-blend-mode: screen;
+    background-image: var(--grain); opacity: 0; mix-blend-mode: screen;
     animation: grain .5s steps(6) infinite;
   }
   @keyframes grain {
@@ -104,6 +104,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const V3 = THREE.Vector3;
@@ -195,12 +196,12 @@ function roadPoint(s, out = new V3()) {
 //  Renderer / scene / camera
 // =====================================================================
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(devicePixelRatio, isTouch ? 1.5 : 1.75));
+renderer.setPixelRatio(Math.min(devicePixelRatio, isTouch ? 1.25 : 1.5));
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.0;
+renderer.toneMappingExposure = 0.95;
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -216,7 +217,11 @@ const MOON_DIR = new V3(0.28, 0.32, -1).normalize();         // where the moon i
 const MOON_LIGHT_DIR = new V3(0.35, 0.75, -1).normalize();   // a higher angle for nicer shadows
 
 // lights
-scene.add(new THREE.HemisphereLight(0x7d8cb0, 0x07080c, 0.3));
+const hemi = new THREE.HemisphereLight(0x7d8cb0, 0x07080c, 0.3);
+scene.add(hemi);
+const flashLight = new THREE.DirectionalLight(0xdfe8ff, 0);
+scene.add(flashLight, flashLight.target);
+const FLASH_DIR = new V3(-0.4, 0.8, -1).normalize();
 const moonLight = new THREE.DirectionalLight(0xc4d2ff, 1.9);
 moonLight.castShadow = true;
 moonLight.shadow.mapSize.set(isTouch ? 2048 : 4096, isTouch ? 2048 : 4096);
@@ -230,7 +235,7 @@ scene.add(moonLight, moonLight.target);
 // =====================================================================
 const skyMat = new THREE.ShaderMaterial({
   side: THREE.BackSide, depthWrite: false, fog: false,
-  uniforms: { uTime: { value: 0 }, uMoonDir: { value: MOON_DIR } },
+  uniforms: { uTime: { value: 0 }, uMoonDir: { value: MOON_DIR }, uFlash: { value: 0 }, uFlashDir: { value: FLASH_DIR } },
   vertexShader: /* glsl */`
     varying vec3 vDir;
     void main() {
@@ -238,7 +243,7 @@ const skyMat = new THREE.ShaderMaterial({
       gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
     }`,
   fragmentShader: /* glsl */`
-    uniform float uTime; uniform vec3 uMoonDir;
+    uniform float uTime, uFlash; uniform vec3 uMoonDir, uFlashDir;
     varying vec3 vDir;
     float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
     float noise(vec2 p) {
@@ -258,18 +263,21 @@ const skyMat = new THREE.ShaderMaterial({
       float disk = smoothstep(0.99955, 0.99972, md);
       float maria = fbm(d.xy * 260. + 3.0);
       col += disk * vec3(2.6, 2.7, 3.0) * (0.78 + 0.3 * maria);
-      // clouds
+      // storm clouds: two drifting layers, lit by the moon and by lightning
       float hh = max(h, 0.015);
-      vec2 cp = d.xz / (hh + 0.22) * 1.25 + vec2(uTime * 0.008, uTime * 0.003);
+      vec2 cp = d.xz / (hh + 0.2) * 1.15 + vec2(uTime * 0.018, uTime * 0.006);
       float c = fbm(cp);
-      float c2 = fbm(cp * 2.4 - vec2(uTime * 0.01, 0.));
-      c = smoothstep(0.40, 0.82, c * 0.75 + c2 * 0.35);
-      float lit = 0.18 + pow(md, 8.) * 1.6 + pow(md, 40.) * 2.5;
-      vec3 cloudCol = vec3(0.075, 0.085, 0.105) * lit;
-      // thin wispy veil over the moon
-      float veil = smoothstep(0.35, 0.9, fbm(cp * 0.7 + 4.)) * 0.55;
-      col = mix(col, cloudCol + col * 0.25, c * smoothstep(-0.03, 0.12, h) * 0.92);
-      col = mix(col, col * 0.55 + cloudCol * 0.6, veil * disk);
+      float c2 = fbm(cp * 2.2 - vec2(uTime * 0.025, 0.));
+      float cov = smoothstep(0.30, 0.72, c * 0.72 + c2 * 0.38);
+      float thick = smoothstep(0.45, 0.95, c * 0.6 + c2 * 0.5);
+      float fd = max(dot(d, uFlashDir), 0.);
+      float lit = 0.14 + pow(md, 8.) * 1.4 + pow(md, 40.) * 2.2;
+      vec3 cloudCol = vec3(0.06, 0.068, 0.085) * lit * (1. - thick * 0.6);
+      cloudCol += vec3(0.75, 0.8, 0.95) * uFlash * (0.25 + 2.2 * pow(fd, 5.)) * (0.5 + c2);
+      float veil = smoothstep(0.3, 0.85, fbm(cp * 0.7 + 4.)) * 0.7;
+      col = mix(col, cloudCol + col * 0.2, cov * smoothstep(-0.03, 0.1, h) * 0.95);
+      col = mix(col, col * 0.45 + cloudCol * 0.6, veil * disk);
+      col += vec3(0.05, 0.055, 0.07) * uFlash * smoothstep(-0.1, 0.4, h);
       gl_FragColor = vec4(col, 1.);
     }`
 });
@@ -656,12 +664,50 @@ for (const lp of CAR.lamps) {
   headlights.push(sl);
   const cg = new THREE.ConeGeometry(3.6, 24, 24, 1, true);
   cg.translate(0, -12, 0); cg.rotateX(-Math.PI / 2 - 0.035);
-  const beam = new THREE.Mesh(cg, beamMat); beam.position.copy(lp);
-  CAR.car.add(beam);
+  // (the beams themselves are now rendered by the volumetric fog pass)
 }
 
 // =====================================================================
-//  Ground fog (billboards) and snow
+//  The apparition — a gaunt figure that waits by the road, and is gone
+// =====================================================================
+function buildFigure() {
+  const g = new THREE.Group();
+  const cloth = new THREE.MeshStandardMaterial({ color: 0x050506, roughness: 1 });
+  const skin = new THREE.MeshStandardMaterial({ color: 0x9a9aa2, roughness: 0.85 });
+  const add = (geo, mat, x, y, z, parent = g) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; parent.add(m); return m; };
+  add(new THREE.CylinderGeometry(0.24, 0.55, 2.0, 9), cloth, 0, 1.0, 0);                    // long coat
+  const sh = add(new THREE.SphereGeometry(0.32, 10, 8), cloth, 0, 2.0, 0.06); sh.scale.set(1.2, 0.7, 0.85);
+  const neck = add(new THREE.CylinderGeometry(0.06, 0.08, 0.2, 6), skin, 0, 2.18, 0.12); neck.rotation.x = 0.5;
+  const head = add(new THREE.SphereGeometry(0.15, 14, 12), skin, 0, 2.36, 0.2); head.scale.set(0.82, 1.4, 1);
+  for (const sx of [-1, 1]) {
+    const ear = add(new THREE.ConeGeometry(0.035, 0.2, 5), skin, sx * 0.12, 2.43, 0.17); ear.rotation.z = -sx * 0.9;
+    const eye = add(new THREE.SphereGeometry(0.022, 6, 6), new THREE.MeshBasicMaterial({ color: 0x000000 }), sx * 0.05, 2.38, 0.33);
+    // arms reaching forward, with long curled fingers
+    const arm = new THREE.Group(); arm.position.set(sx * 0.33, 1.98, 0.08); arm.rotation.set(-1.05, 0, sx * 0.12); g.add(arm);
+    const ag = new THREE.CylinderGeometry(0.05, 0.06, 0.85, 6); ag.translate(0, -0.42, 0);
+    add(ag, cloth, 0, 0, 0, arm);
+    for (let f = 0; f < 4; f++) {
+      const fg = new THREE.CylinderGeometry(0.008, 0.014, 0.34, 4); fg.translate(0, -0.17, 0);
+      const fm = add(fg, skin, (f - 1.5) * 0.03, -0.86, 0, arm);
+      fm.rotation.set(-0.5 - f * 0.08, 0, (f - 1.5) * 0.18);
+    }
+  }
+  g.scale.setScalar(1.12);
+  return g;
+}
+const apparitions = [230, 525, 830].map((at, i) => {
+  const f = buildFigure();
+  const side = i % 2 ? 1 : -1, x = roadXs(at) + side * 3.1, z = -at;
+  f.position.set(x, terrainH(x, z) - 0.05, z);
+  f.visible = false; scene.add(f);
+  return { f, at, seen: false };
+});
+const finalFigure = buildFigure();
+finalFigure.visible = false; scene.add(finalFigure);
+let sputterT = -10;
+
+// =====================================================================
+//  Ground fog (billboards), rain and lightning
 // =====================================================================
 function fogTexture() {
   const cv = document.createElement('canvas'); cv.width = cv.height = 128;
@@ -681,7 +727,7 @@ function addPuff(x, y, z, sc, op) {
   const sp = new THREE.Sprite(m); sp.position.set(x, y, z); sp.scale.set(sc * 1.8, sc, 1);
   scene.add(sp); fogPuffs.push({ sp, x, ph: rng() * 6.28, sp0: 0.5 + rng() });
 }
-for (let i = 0; i < 120; i++) {
+for (let i = 0; i < 45; i++) {
   const s = -20 + rng() * (END + 80);
   const x = roadXs(s) + (rng() - 0.5) * 80, z = -s;
   addPuff(x, roadYs(s) + 1 + rng() * 5, z, 20 + rng() * 30, 0.10 + rng() * 0.16);
@@ -691,29 +737,153 @@ for (let i = 0; i < 30; i++) {   // mist curling around the crag
   addPuff(CX + Math.cos(a) * r, castleBaseY - 70 + rng() * 60, CZ + Math.sin(a) * r * 0.6 + 40, 90 + rng() * 120, 0.08 + rng() * 0.12);
 }
 
-const SNOW_N = isTouch ? 2500 : 5000, SB = new V3(90, 50, 90);
-const snowPos = new Float32Array(SNOW_N * 3), snowVel = new Float32Array(SNOW_N);
-for (let i = 0; i < SNOW_N; i++) {
-  snowPos[i * 3] = (rng() - 0.5) * SB.x; snowPos[i * 3 + 1] = (rng() - 0.5) * SB.y; snowPos[i * 3 + 2] = (rng() - 0.5) * SB.z;
-  snowVel[i] = 0.8 + rng() * 1.6;
+const RAIN_N = isTouch ? 1200 : 2200, RB = new V3(70, 40, 70);
+const RAIN_DIR = new V3(0.18, -1, 0.08).normalize();
+const RAIN_LEN = 0.7;
+const rainHead = new Float32Array(RAIN_N * 3), rainVel = new Float32Array(RAIN_N);
+for (let i = 0; i < RAIN_N; i++) {
+  rainHead[i * 3] = (rng() - 0.5) * RB.x; rainHead[i * 3 + 1] = (rng() - 0.5) * RB.y; rainHead[i * 3 + 2] = (rng() - 0.5) * RB.z;
+  rainVel[i] = 14 + rng() * 8;
 }
-const snowGeo = new THREE.BufferGeometry();
-snowGeo.setAttribute('position', new THREE.BufferAttribute(snowPos, 3));
-const flakeTex = (() => {
-  const cv = document.createElement('canvas'); cv.width = cv.height = 32;
-  const g = cv.getContext('2d'); const grd = g.createRadialGradient(16, 16, 0, 16, 16, 16);
-  grd.addColorStop(0, 'rgba(255,255,255,1)'); grd.addColorStop(0.4, 'rgba(255,255,255,.5)'); grd.addColorStop(1, 'rgba(255,255,255,0)');
-  g.fillStyle = grd; g.fillRect(0, 0, 32, 32); return new THREE.CanvasTexture(cv);
-})();
-const snow = new THREE.Points(snowGeo, new THREE.PointsMaterial({ size: 0.075, map: flakeTex, color: 0xdfe7ff, transparent: true, opacity: 0.85, depthWrite: false }));
-snow.frustumCulled = false;
-scene.add(snow);
+const rainPos = new Float32Array(RAIN_N * 6);
+const rainGeo = new THREE.BufferGeometry();
+rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+const rainMat = new THREE.LineBasicMaterial({ color: 0xa8b4cc, transparent: true, opacity: 0.28, depthWrite: false });
+const rain = new THREE.LineSegments(rainGeo, rainMat);
+rain.frustumCulled = false;
+scene.add(rain);
+
+// lightning bolt (rebuilt for every strike)
+const boltMat = new THREE.LineBasicMaterial({ color: new THREE.Color(7, 7.5, 9), transparent: true, opacity: 0, fog: false });
+const bolt = new THREE.LineSegments(new THREE.BufferGeometry(), boltMat);
+bolt.frustumCulled = false;
+scene.add(bolt);
+function buildBolt(top, bottom) {
+  const segs = [];
+  function branch(a, b, disp, depth) {
+    if (depth === 0) { segs.push(a.x, a.y, a.z, b.x, b.y, b.z); return; }
+    const m = a.clone().lerp(b, 0.5);
+    m.x += (Math.random() - 0.5) * disp; m.z += (Math.random() - 0.5) * disp; m.y += (Math.random() - 0.5) * disp * 0.3;
+    branch(a, m, disp * 0.55, depth - 1);
+    branch(m, b, disp * 0.55, depth - 1);
+    if (depth > 3 && Math.random() < 0.35) {
+      const e = m.clone().add(new V3((Math.random() - 0.5) * disp * 1.5, -disp * (0.6 + Math.random()), (Math.random() - 0.5) * disp));
+      branch(m, e, disp * 0.4, depth - 3);
+    }
+  }
+  branch(top, bottom, 160, 8);
+  bolt.geometry.dispose();
+  bolt.geometry = new THREE.BufferGeometry();
+  bolt.geometry.setAttribute('position', new THREE.Float32BufferAttribute(segs, 3));
+}
+let flashes = [], nextStrike = params.has('strike') ? 0 : 6, flash = 0;
+function strike(t) {
+  const n = 2 + (Math.random() * 3 | 0);
+  let o = 0;
+  for (let i = 0; i < n; i++) { flashes.push({ t: t + o, a: 0.5 + Math.random() * 0.8 }); o += 0.05 + Math.random() * 0.2; }
+  // pick a spot in the sky somewhere ahead of the camera
+  const fwd = new V3(); camera.getWorldDirection(fwd); fwd.y = 0; fwd.normalize();
+  const ang = (Math.random() - 0.5) * 1.6, dist = 600 + Math.random() * 700;
+  const dir = fwd.applyAxisAngle(new V3(0, 1, 0), ang);
+  const base = camera.position.clone().addScaledVector(dir, dist);
+  base.y = terrainH(base.x, base.z) - 10;
+  buildBolt(new V3(base.x + (Math.random() - 0.5) * 200, camera.position.y + 520, base.z), base);
+  FLASH_DIR.copy(base).sub(camera.position); FLASH_DIR.y = 0; FLASH_DIR.normalize(); FLASH_DIR.y = 0.6; FLASH_DIR.normalize();
+  const delay = dist / 340 * 0.6 + Math.random() * 0.4;          // sound arrives a little later
+  const power = THREE.MathUtils.clamp(1.4 - dist / 1600, 0.35, 1);
+  setTimeout(() => sound.thunder(power), delay * 1000);
+}
 
 // =====================================================================
 //  Post-processing: bloom + silent-film look (mono tint, grain, flicker, iris)
 // =====================================================================
+// Volumetric fog: render the scene with depth, then raymarch drifting 3D fog through it,
+// lit by the moon (forward scattering) and carved by the car's headlamp cones.
+class VolumetricFogPass extends Pass {
+  constructor(scene, camera) {
+    super();
+    this.scene = scene; this.camera = camera; this.needsSwap = false;
+    this.rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
+    this.rt.depthTexture = new THREE.DepthTexture(1, 1);
+    this.rt.depthTexture.type = THREE.UnsignedIntType;
+    this.uniforms = {
+      tColor: { value: null }, tDepth: { value: null },
+      uProjInv: { value: new THREE.Matrix4() }, uCamWorld: { value: new THREE.Matrix4() }, uCamPos: { value: new V3() },
+      uMoonDir: { value: MOON_DIR }, uTime: { value: 0 }, uGround: { value: 0 }, uLamp: { value: 1 }, uDens: { value: 1 }, uFlash: { value: 0 },
+      uLampP: { value: [new V3(), new V3()] }, uLampD: { value: [new V3(0, 0, 1), new V3(0, 0, 1)] },
+    };
+    this.quad = new FullScreenQuad(new THREE.ShaderMaterial({
+      uniforms: this.uniforms, depthTest: false, depthWrite: false,
+      defines: { STEPS: isTouch ? 18 : 34, MAXD: '230.0' },
+      vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0., 1.); }`,
+      fragmentShader: /* glsl */`
+        uniform sampler2D tColor, tDepth; uniform mat4 uProjInv, uCamWorld;
+        uniform vec3 uCamPos, uMoonDir, uLampP[2], uLampD[2];
+        uniform float uTime, uGround, uLamp, uDens, uFlash;
+        varying vec2 vUv;
+        float hash3(vec3 p) { p = fract(p * 0.3183099 + .1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+        float noise3(vec3 x) {
+          vec3 i = floor(x), f = fract(x); f = f * f * (3. - 2. * f);
+          return mix(mix(mix(hash3(i), hash3(i + vec3(1,0,0)), f.x), mix(hash3(i + vec3(0,1,0)), hash3(i + vec3(1,1,0)), f.x), f.y),
+                     mix(mix(hash3(i + vec3(0,0,1)), hash3(i + vec3(1,0,1)), f.x), mix(hash3(i + vec3(0,1,1)), hash3(i + vec3(1,1,1)), f.x), f.y), f.z);
+        }
+        float density(vec3 p) {
+          vec3 q = p * vec3(0.04, 0.07, 0.04) + vec3(uTime * 0.045, -uTime * 0.01, uTime * 0.018);
+          float n = noise3(q) * 0.58 + noise3(q * 2.3 + vec3(0., uTime * 0.04, 0.)) * 0.3 + noise3(q * 5.3) * 0.12;
+          float h = p.y - uGround;
+          float low = exp(-max(h, 0.) / 5.5);            // thick banks hugging the ground
+          float high = 0.12 * exp(-max(h, 0.) / 30.);    // thin haze above
+          return (low * smoothstep(0.32, 0.78, n) * 1.4 + high * (0.4 + n)) * uDens;
+        }
+        void main() {
+          vec3 col = texture2D(tColor, vUv).rgb;
+          float z = texture2D(tDepth, vUv).x;
+          vec4 v = uProjInv * vec4(vUv * 2. - 1., z * 2. - 1., 1.); v.xyz /= v.w;
+          vec3 wp = (uCamWorld * vec4(v.xyz, 1.)).xyz;
+          vec3 rd = wp - uCamPos; float dist = length(rd); rd /= dist;
+          float L = min(dist, MAXD);
+          float stepL = L / float(STEPS);
+          float jit = 0.5 + 0.25 * (fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5);
+          float t = stepL * jit;
+          float T = 1.; vec3 S = vec3(0.);
+          float mu = dot(rd, uMoonDir), g = 0.6;
+          float phase = 0.35 + 0.09 * (1. - g * g) / pow(1. + g * g - 2. * g * mu, 1.5);
+          vec3 moonC = vec3(0.075, 0.09, 0.125) * phase + vec3(0.5, 0.55, 0.65) * uFlash;
+          for (int i = 0; i < STEPS; i++) {
+            vec3 p = uCamPos + rd * t;
+            float d = density(p) * 0.045;
+            if (d > 0.0005) {
+              vec3 Li = moonC;
+              for (int k = 0; k < 2; k++) {
+                vec3 lv = p - uLampP[k]; float r = length(lv);
+                float c = dot(lv, uLampD[k]) / max(r, 1e-3);
+                Li += vec3(1., 0.9, 0.74) * smoothstep(0.9, 0.98, c) * uLamp * 1.4 / (1. + r * r * 0.02);
+              }
+              float a = d * stepL;
+              S += T * Li * a;
+              T *= exp(-a);
+            }
+            t += stepL;
+          }
+          gl_FragColor = vec4(col * T + S, 1.);
+        }`
+    }));
+  }
+  setSize(w, h) { this.rt.setSize(w, h); }
+  render(renderer, writeBuffer, readBuffer) {
+    renderer.setRenderTarget(this.rt); renderer.clear(); renderer.render(this.scene, this.camera);
+    const u = this.uniforms;
+    u.tColor.value = this.rt.texture; u.tDepth.value = this.rt.depthTexture;
+    u.uProjInv.value.copy(this.camera.projectionMatrixInverse);
+    u.uCamWorld.value.copy(this.camera.matrixWorld);
+    u.uCamPos.value.setFromMatrixPosition(this.camera.matrixWorld);
+    renderer.setRenderTarget(this.renderToScreen ? null : readBuffer);
+    this.quad.render(renderer);
+  }
+}
 const composer = new EffectComposer(renderer);
-composer.addPass(new RenderPass(scene, camera));
+const fogPass = new VolumetricFogPass(scene, camera);
+composer.addPass(fogPass);
 const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.7, 0.9);
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
@@ -724,41 +894,18 @@ const filmPass = new ShaderPass({
   },
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.); }`,
   fragmentShader: /* glsl */`
-    uniform sampler2D tDiffuse; uniform float uTime, uAspect, uIris; uniform vec2 uIrisC, uRes;
+    uniform sampler2D tDiffuse; uniform float uTime, uAspect, uIris; uniform vec2 uIrisC;
     varying vec2 vUv;
     float rand(vec2 c) { return fract(sin(dot(c, vec2(12.9898, 78.233))) * 43758.5453); }
     void main() {
-      float fr = floor(uTime * 18.);
-      vec2 uv = vUv;
-      uv.y += (rand(vec2(fr, 1.)) - .5) * 0.0016;   // gate weave
-      uv.x += (rand(vec2(fr, 2.)) - .5) * 0.0009;
-      vec3 c = texture2D(tDiffuse, uv).rgb;
+      vec3 c = texture2D(tDiffuse, vUv).rgb;
       float l = dot(c, vec3(0.299, 0.587, 0.114));
       l = pow(l, 1.08);
       l = mix(l, smoothstep(0., 1., l), 0.35);
       vec3 col = l * vec3(0.80, 0.89, 1.06) + vec3(0.004, 0.008, 0.016);
-      // flicker
-      col *= 0.95 + 0.07 * rand(vec2(fr, 3.));
-      // grain
-      float gr = rand(floor(vUv * uRes / 1.5) + fract(uTime * 7.3) * 91.7) - .5;
-      col += gr * 0.055 * (0.6 + l);
-      // scratches
-      if (rand(vec2(fr, 6.)) > 0.72) {
-        float sx = rand(vec2(fr, 5.));
-        col += smoothstep(0.0011, 0., abs(vUv.x - sx)) * 0.10 * step(0.3, rand(vec2(floor(vUv.y * 9.), fr)));
-      }
-      // dust specks
-      for (int i = 0; i < 2; i++) {
-        float fi = float(i);
-        vec2 p = vec2(rand(vec2(fr, 7. + fi)), rand(vec2(fr, 9. + fi)));
-        float s = (0.002 + 0.004 * rand(vec2(fr, 11. + fi)));
-        float d = length((vUv - p) * vec2(uAspect, 1.));
-        col = mix(col, vec3(0.), smoothstep(s, s * 0.3, d) * step(0.55, rand(vec2(fr, 13. + fi))) * 0.85);
-      }
-      // vignette
+      col *= 0.975 + 0.025 * rand(vec2(floor(uTime * 18.), 3.));     // faint projector flicker
       float v = length((vUv - .5) * vec2(uAspect * 0.85, 1.));
-      col *= mix(1., 0.25, smoothstep(0.35, 0.95, v));
-      // iris
+      col *= mix(1., 0.12, smoothstep(0.3, 0.92, v));
       float id = length((vUv - uIrisC) * vec2(uAspect, 1.));
       col *= smoothstep(uIris, uIris - 0.02, id);
       gl_FragColor = vec4(col, 1.);
@@ -792,6 +939,11 @@ const sound = {
     const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 450; bp.Q.value = 0.8;
     const lfo = ctx.createOscillator(); lfo.frequency.value = 0.11;
     const lfoG = ctx.createGain(); lfoG.gain.value = 260; lfo.connect(lfoG).connect(bp.frequency);
+    const rainSrc = ctx.createBufferSource(); rainSrc.buffer = buf; rainSrc.loop = true; rainSrc.playbackRate.value = 0.93;
+    const rhp = ctx.createBiquadFilter(); rhp.type = 'highpass'; rhp.frequency.value = 1800;
+    const rlp = ctx.createBiquadFilter(); rlp.type = 'lowpass'; rlp.frequency.value = 7000;
+    const rg = ctx.createGain(); rg.gain.value = 0.045;
+    rainSrc.connect(rhp).connect(rlp).connect(rg).connect(master); rainSrc.start();
     const wg = ctx.createGain(); wg.gain.value = 0.10;
     const gust = ctx.createOscillator(); gust.frequency.value = 0.07; const gustG = ctx.createGain(); gustG.gain.value = 0.06;
     gust.connect(gustG).connect(wg.gain);
@@ -812,8 +964,14 @@ const sound = {
     const og = ctx.createGain(); og.gain.value = 0.0; og.gain.setTargetAtTime(0.05, ctx.currentTime, 3);
     const trem = ctx.createOscillator(); trem.frequency.value = 4.6; const tremG = ctx.createGain(); tremG.gain.value = 0.008;
     trem.connect(tremG).connect(og.gain); trem.start();
-    olp.connect(og).connect(master);
-    const chords = [[55, 110, 130.81, 164.81], [43.65, 87.31, 130.81, 207.65], [36.71, 73.42, 146.83, 174.61], [41.2, 82.41, 123.47, 155.56]];
+    // a long, dark echo for the organ and the howls
+    const echo = this.echo = ctx.createDelay(2); echo.delayTime.value = 0.42;
+    const fb = ctx.createGain(); fb.gain.value = 0.45;
+    const elp2 = ctx.createBiquadFilter(); elp2.type = 'lowpass'; elp2.frequency.value = 1400;
+    echo.connect(elp2).connect(fb).connect(echo); elp2.connect(master);
+    olp.connect(og).connect(master); og.connect(echo);
+    this.noiseBuf = buf;
+    const chords = [[55, 82.41, 130.81, 155.56], [51.91, 77.78, 123.47, 146.83], [49, 73.42, 116.54, 138.59], [55, 82.41, 130.81, 164.81], [46.25, 69.3, 110, 130.81]];
     const voices = chords[0].map(f => {
       const o = ctx.createOscillator(); o.type = 'triangle'; o.frequency.value = f;
       const o2 = ctx.createOscillator(); o2.type = 'sine'; o2.frequency.value = f * 2.003;
@@ -829,6 +987,62 @@ const sound = {
         o2.frequency.setTargetAtTime(chords[ci][k] * 2.003, ctx.currentTime, 0.4);
       });
     }, 7000);
+  },
+  thunder(power = 1) {
+    if (!this.ctx) return;
+    const ctx = this.ctx, t0 = ctx.currentTime;
+    // the crack
+    const c = ctx.createBufferSource(); c.buffer = this.noiseBuf;
+    const cf = ctx.createBiquadFilter(); cf.type = 'lowpass'; cf.frequency.setValueAtTime(3000 * power, t0); cf.frequency.exponentialRampToValueAtTime(300, t0 + 0.6);
+    const cg = ctx.createGain(); cg.gain.setValueAtTime(0, t0); cg.gain.linearRampToValueAtTime(0.35 * power * power, t0 + 0.02); cg.gain.exponentialRampToValueAtTime(0.001, t0 + 0.9);
+    c.connect(cf).connect(cg).connect(this.master); c.start(t0, Math.random()); c.stop(t0 + 1);
+    // the long rolling rumble
+    const r = ctx.createBufferSource(); r.buffer = this.noiseBuf; r.loop = true; r.playbackRate.value = 0.5;
+    const rf = ctx.createBiquadFilter(); rf.type = 'lowpass'; rf.frequency.setValueAtTime(220, t0); rf.frequency.exponentialRampToValueAtTime(70, t0 + 6);
+    const rf2 = ctx.createBiquadFilter(); rf2.type = 'lowpass'; rf2.frequency.value = 180;
+    const rg = ctx.createGain(); rg.gain.setValueAtTime(0, t0);
+    rg.gain.linearRampToValueAtTime(1.1 * power, t0 + 0.25);
+    rg.gain.setTargetAtTime(0.6 * power, t0 + 0.4, 0.5);
+    rg.gain.exponentialRampToValueAtTime(0.001, t0 + 7);
+    const roll = ctx.createOscillator(); roll.frequency.value = 2.5 + Math.random() * 3;
+    const rollG = ctx.createGain(); rollG.gain.value = 0.35 * power; roll.connect(rollG).connect(rg.gain);
+    r.connect(rf).connect(rf2).connect(rg).connect(this.master); rg.connect(this.echo);
+    r.start(t0); roll.start(t0); r.stop(t0 + 7.2); roll.stop(t0 + 7.2);
+  },
+  howl() {
+    const ctx = this.ctx, t0 = ctx.currentTime;
+    const o = ctx.createOscillator(); o.type = 'sine';
+    const base = 330 + Math.random() * 80;
+    o.frequency.setValueAtTime(base, t0);
+    o.frequency.exponentialRampToValueAtTime(base * 1.75, t0 + 0.9);
+    o.frequency.setValueAtTime(base * 1.75, t0 + 2.0);
+    o.frequency.exponentialRampToValueAtTime(base * 0.9, t0 + 3.6);
+    const vib = ctx.createOscillator(); vib.frequency.value = 5.5; const vg = ctx.createGain(); vg.gain.value = 7;
+    vib.connect(vg).connect(o.frequency);
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 700; bp.Q.value = 1.2;
+    const g = ctx.createGain(); g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(0.022, t0 + 0.5); g.gain.setValueAtTime(0.022, t0 + 2.4); g.gain.linearRampToValueAtTime(0, t0 + 3.7);
+    const pan = ctx.createStereoPanner ? ctx.createStereoPanner() : ctx.createGain();
+    if (pan.pan) pan.pan.value = Math.random() * 1.6 - 0.8;
+    o.connect(bp).connect(g).connect(pan); pan.connect(this.master); pan.connect(this.echo);
+    o.start(t0); vib.start(t0); o.stop(t0 + 4); vib.stop(t0 + 4);
+  },
+  stinger(big = false) {
+    if (!this.ctx) return;
+    const ctx = this.ctx, t0 = ctx.currentTime;
+    const g = ctx.createGain(); g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(big ? 0.11 : 0.07, t0 + 0.04);
+    g.gain.exponentialRampToValueAtTime(0.0008, t0 + (big ? 6 : 3.5));
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = big ? 2400 : 1600;
+    lp.connect(g); g.connect(this.master); g.connect(this.echo);
+    for (const f of (big ? [41.2, 43.65, 58.27, 61.74, 87.31, 92.5, 123.47, 185] : [58.27, 61.74, 87.31, 92.5, 130.81])) {
+      const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f * (1 + (Math.random() - 0.5) * 0.01);
+      o.connect(lp); o.start(t0); o.stop(t0 + 6.5);
+    }
+    const n = ctx.createBufferSource(); n.buffer = this.noiseBuf;
+    const nb = ctx.createBiquadFilter(); nb.type = 'highpass'; nb.frequency.value = 2500;
+    const ng = ctx.createGain(); ng.gain.setValueAtTime(0.05, t0); ng.gain.exponentialRampToValueAtTime(0.0005, t0 + 0.8);
+    n.connect(nb).connect(ng).connect(this.master); n.start(t0); n.stop(t0 + 1);
   },
   update(spd) {
     if (!this.ctx) return;
@@ -869,8 +1083,11 @@ let state = 'intro';           // intro → drive → end
 let s = 0, speed = 0, throttle = false, startT = 0, endT = 0, lastInputT = 0, storyIdx = 0;
 const MAX_SPEED = 17;
 
+let nextHowl = 8;
 function begin() {
   state = 'drive'; startT = clock.elapsedTime; s = 0; speed = 0; storyIdx = 0;
+  for (const a of apparitions) { a.seen = false; a.f.visible = false; }
+  finalFigure.visible = false;
   cardEl.classList.remove('show');
   snapCamera = true;
 }
@@ -939,9 +1156,41 @@ function frame() {
   CAR.body.position.y = Math.sin(t * 38) * shake + Math.sin(t * 2.3 + s * 0.4) * speed * 0.004;
   CAR.body.rotation.z = Math.sin(t * 1.7 + s * 0.3) * speed * 0.0015 + Math.sin(t * 31) * 0.003;
   // acetylene lamps flicker a little
-  const fl = 0.92 + 0.08 * Math.sin(t * 23) * Math.sin(t * 7.1);
+  let fl = 0.92 + 0.08 * Math.sin(t * 23) * Math.sin(t * 7.1);
+  const spt = t - sputterT;
+  if (spt < 1.4) fl *= spt < 1.1 ? (Math.random() < 0.55 ? 0.05 : 0.6 + Math.random() * 0.4) : 0.2 + spt * 0.5;
   for (const h of headlights) h.intensity = 260 * fl;
-  beamMat.uniforms.uInt.value = fl;
+  CAR.lensMat.color.setRGB(6 * fl, 5.2 * fl, 3.6 * fl);
+  const FU = fogPass.uniforms;
+  FU.uTime.value = t; FU.uLamp.value = fl;
+  FU.uGround.value = p.y - 0.5;
+  for (let k = 0; k < 2; k++) {
+    headlights[k].getWorldPosition(FU.uLampP.value[k]);
+    headlights[k].target.getWorldPosition(FU.uLampD.value[k]);
+    FU.uLampD.value[k].sub(FU.uLampP.value[k]).normalize();
+  }
+
+  // --- the apparitions: glimpsed in the fog ahead, gone when you draw near
+  for (const a of apparitions) {
+    const dz = a.at - s;
+    if (!a.seen && dz < 95 && dz > 26) a.f.visible = true;
+    if (!a.seen && a.f.visible && dz <= 26) { a.seen = true; a.f.visible = false; sputterT = t; sound.stinger(); }
+    if (a.f.visible) a.f.rotation.y = Math.atan2(camera.position.x - a.f.position.x, camera.position.z - a.f.position.z);
+  }
+  if (state === 'end') {
+    const te = t - endT;
+    if (te > 2.6 && !finalFigure.visible && te < 3) {
+      roadPoint(END + 16, finalFigure.position);
+      finalFigure.visible = true; sputterT = t; sound.stinger(true);
+    }
+    if (finalFigure.visible) {
+      finalFigure.rotation.y = Math.atan2(camera.position.x - finalFigure.position.x, camera.position.z - finalFigure.position.z);
+      // it drifts slowly toward you
+      const fp = roadPoint(END + 16 - Math.min(te - 2.6, 8) * 0.9, tmpC);
+      finalFigure.position.copy(fp);
+    }
+  }
+  if (sound.ctx && t > nextHowl) { sound.howl(); nextHowl = t + 16 + Math.random() * 22; }
 
   // --- camera: rides the road behind the car, gazing toward the castle
   const endK = state === 'end' ? smooth(0, 5, t - endT) : 0;
@@ -993,20 +1242,39 @@ function frame() {
   // --- fog drifts
   for (const f of fogPuffs) f.sp.position.x = f.x + Math.sin(t * 0.05 * f.sp0 + f.ph) * 6;
 
-  // --- snow streams past as the car moves
+  // --- rain: streaks wrap around the camera and stream past as the car moves
   const dc = tmpA.copy(camera.position).sub(prevCam); prevCam.copy(camera.position);
-  for (let i = 0; i < SNOW_N; i++) {
-    const k = i * 3;
-    let x = snowPos[k] - dc.x + Math.sin(t * 0.6 + i) * 0.15 * dt + 0.9 * dt;
-    let y = snowPos[k + 1] - dc.y - snowVel[i] * dt;
-    let z = snowPos[k + 2] - dc.z + 0.4 * dt;
-    x = ((x + SB.x / 2) % SB.x + SB.x) % SB.x - SB.x / 2;
-    y = ((y + SB.y / 2) % SB.y + SB.y) % SB.y - SB.y / 2;
-    z = ((z + SB.z / 2) % SB.z + SB.z) % SB.z - SB.z / 2;
-    snowPos[k] = x; snowPos[k + 1] = y; snowPos[k + 2] = z;
+  for (let i = 0; i < RAIN_N; i++) {
+    const k = i * 3, v = rainVel[i] * dt;
+    let x = rainHead[k] - dc.x + RAIN_DIR.x * v;
+    let y = rainHead[k + 1] - dc.y + RAIN_DIR.y * v;
+    let z = rainHead[k + 2] - dc.z + RAIN_DIR.z * v;
+    x = ((x + RB.x / 2) % RB.x + RB.x) % RB.x - RB.x / 2;
+    y = ((y + RB.y / 2) % RB.y + RB.y) % RB.y - RB.y / 2;
+    z = ((z + RB.z / 2) % RB.z + RB.z) % RB.z - RB.z / 2;
+    rainHead[k] = x; rainHead[k + 1] = y; rainHead[k + 2] = z;
+    const j = i * 6;
+    rainPos[j] = x; rainPos[j + 1] = y; rainPos[j + 2] = z;
+    rainPos[j + 3] = x - RAIN_DIR.x * RAIN_LEN; rainPos[j + 4] = y - RAIN_DIR.y * RAIN_LEN; rainPos[j + 5] = z - RAIN_DIR.z * RAIN_LEN;
   }
-  snowGeo.attributes.position.needsUpdate = true;
-  snow.position.copy(camera.position);
+  rainGeo.attributes.position.needsUpdate = true;
+  rain.position.copy(camera.position);
+  rainMat.opacity = 0.16 + flash * 0.45;
+
+  // --- lightning
+  if (state !== 'intro' && t > nextStrike) { strike(t); nextStrike = params.has('strike') ? t + 0.35 : t + 7 + Math.random() * 14; }
+  flash = 0;
+  flashes = flashes.filter(f => t - f.t < 1.5);
+  for (const f of flashes) if (t >= f.t) flash += f.a * Math.exp(-(t - f.t) * 13);
+  flash = Math.min(flash, 1.6);
+  boltMat.opacity = clamp(flash * 1.4, 0, 1);
+  bolt.visible = flash > 0.05;
+  flashLight.intensity = flash * 4.5;
+  flashLight.position.copy(CAR.car.position).addScaledVector(FLASH_DIR, 300);
+  flashLight.target.position.copy(CAR.car.position);
+  hemi.intensity = 0.3 + flash * 1.2;
+  skyMat.uniforms.uFlash.value = flash;
+  fogPass.uniforms.uFlash.value = flash;
 
   // --- iris in / iris out on the castle
   const U = filmPass.uniforms;
