@@ -1360,7 +1360,7 @@ function buildBolt(top, bottom) {
   bolt.geometry = new THREE.BufferGeometry();
   bolt.geometry.setAttribute('position', new THREE.Float32BufferAttribute(segs, 3));
 }
-let flashes = [], nextStrike = params.has('strike') ? 0 : 6, flash = 0;
+let revealFlashT = -99, flashes = [], nextStrike = params.has('strike') ? 0 : 6, flash = 0;
 function strike(t) {
   const n = 2 + (Math.random() * 3 | 0);
   let o = 0;
@@ -1647,6 +1647,39 @@ const sound = {
     n.connect(hp).connect(ng); ng.connect(this.master); ng.connect(this.echo); n.start(t0); n.stop(t0 + 3.3);
     // the organ swells underneath
     this.og.gain.cancelScheduledValues(t0); this.og.gain.setTargetAtTime(0.14, t0, 0.08); this.og.gain.setTargetAtTime(0.05, t0 + 4, 2);
+    const mf = m => 440 * Math.pow(2, (m - 69) / 12);
+    // the braam: a huge low brass swell on D whose filter rips open and slowly closes
+    const blp = ctx.createBiquadFilter(); blp.type = 'lowpass'; blp.Q.value = 3;
+    blp.frequency.setValueAtTime(150, t0); blp.frequency.linearRampToValueAtTime(1400, t0 + 0.3); blp.frequency.exponentialRampToValueAtTime(140, t0 + 6);
+    const bg = ctx.createGain(); bg.gain.setValueAtTime(0, t0); bg.gain.linearRampToValueAtTime(0.2, t0 + 0.06); bg.gain.exponentialRampToValueAtTime(0.0005, t0 + 6.5);
+    blp.connect(bg); bg.connect(this.master); bg.connect(this.echo);
+    for (const [m, det] of [[26, -8], [26, 8], [38, -4], [38, 5], [45, 0], [50, -6], [51, 4]]) {   // D with a grinding Eb on top
+      const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = mf(m); o.detune.setValueAtTime(det, t0);
+      o.detune.linearRampToValueAtTime(det - 30, t0 + 6);       // sags flat as it dies
+      o.connect(blp); o.start(t0); o.stop(t0 + 6.6);
+    }
+    // sub drop you feel in the chest
+    const sub = ctx.createOscillator(); sub.frequency.setValueAtTime(62, t0); sub.frequency.exponentialRampToValueAtTime(28, t0 + 2);
+    const sg = ctx.createGain(); sg.gain.setValueAtTime(0.9, t0); sg.gain.exponentialRampToValueAtTime(0.0005, t0 + 3.2);
+    sub.connect(sg).connect(this.master); sub.start(t0); sub.stop(t0 + 3.3);
+    // a dark choir swelling up behind it ("ah" formants on a cluster)
+    const ch = ctx.createGain(); ch.gain.setValueAtTime(0, t0); ch.gain.linearRampToValueAtTime(0.09, t0 + 1.8); ch.gain.setValueAtTime(0.09, t0 + 3.5); ch.gain.exponentialRampToValueAtTime(0.0005, t0 + 8);
+    ch.connect(this.master); ch.connect(this.echo);
+    const formants = [[700, 8, 1], [1150, 10, 0.5], [2800, 12, 0.2]].map(([f, q, a]) => {
+      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = q;
+      const fg = ctx.createGain(); fg.gain.value = a * 3; bp.connect(fg).connect(ch); return bp;
+    });
+    for (const m of [62, 65, 68, 69, 74, 75]) for (const det of [-9, 0, 10]) {
+      const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = mf(m); o.detune.value = det;
+      const vib = ctx.createOscillator(); vib.frequency.value = 4.8 + Math.random(); const vg = ctx.createGain(); vg.gain.value = mf(m) * 0.006;
+      vib.connect(vg).connect(o.frequency);
+      for (const bp of formants) o.connect(bp);
+      o.start(t0); vib.start(t0); o.stop(t0 + 8.1); vib.stop(t0 + 8.1);
+    }
+    // a second timpani strike
+    const t2 = ctx.createOscillator(); t2.frequency.setValueAtTime(80, t0 + 0.42); t2.frequency.exponentialRampToValueAtTime(40, t0 + 1.0);
+    const t2g = ctx.createGain(); t2g.gain.setValueAtTime(0, t0); t2g.gain.setValueAtTime(0.7, t0 + 0.42); t2g.gain.exponentialRampToValueAtTime(0.0005, t0 + 3.2);
+    t2.connect(t2g).connect(this.master); t2.start(t0 + 0.42); t2.stop(t0 + 3.3);
   },
   // the trailer's score: dark ambience — no melody, only slowly evolving texture that
   // tightens toward the castle and closes on one deep "braam" under the title
@@ -1968,7 +2001,7 @@ function frame() {
   }
   // --- the ending: the gate swings open, then the castle door
   if (state === 'end') {
-    if (te > 1.6 && !endFx.squeak) { endFx.squeak = true; sound.gateSqueal(8.9); }
+    if (te > 1.6 && !endFx.squeak) { endFx.squeak = true; sound.gateSqueal(8.9, false); }
     GATE.set(1.5 * (trailerOv.gate ?? smooth(1.6, 10.5, te)));
     if (te > 15.5 && !endFx.creak) { endFx.creak = true; sound.creak(6.5, 120, 0.09); }
     DOOR.set(1.4 * smooth(15.5, 22.5, te));
@@ -2001,9 +2034,11 @@ function frame() {
       if (te > UNVEIL && !endFx.unveil) {
         endFx.unveil = true;
         // lightning right on top of us: three hard flashes, a deafening crack, the orchestra hits
-        flashes.push({ t, a: 1.7 }, { t: t + 0.11, a: 0.9 }, { t: t + 0.3, a: 1.4 }, { t: t + 1.1, a: 0.6 });
+        flashes.push({ t, a: 2.6 }, { t: t + 0.09, a: 1.3 }, { t: t + 0.22, a: 2.2 }, { t: t + 0.5, a: 0.9 }, { t: t + 1.15, a: 1.8 }, { t: t + 1.32, a: 0.8 }, { t: t + 2.6, a: 1.0 });
+        revealFlashT = t;
         nextStrike = t + 14;
-        sound.thunder(1.45); sound.unveil();
+        sound.thunder(1.9); sound.unveil();
+        setTimeout(() => sound.thunder(1.3), 1150);
       }
       if (te > 17 && !endFx.thunder) { endFx.thunder = true; strike(t); nextStrike = t + 9; }
     }
@@ -2132,7 +2167,7 @@ function frame() {
   flash = 0;
   flashes = flashes.filter(f => t - f.t < 1.5);
   for (const f of flashes) if (t >= f.t) flash += f.a * Math.exp(-(t - f.t) * 13);
-  flash = Math.min(flash, 1.6);
+  flash = Math.min(flash, state === 'end' && t - revealFlashT < 4 ? 2.8 : 1.6);
   boltMat.opacity = clamp(flash * 1.4, 0, 1);
   bolt.visible = flash > 0.05;
   flashLight.intensity = flash * 4.5;
