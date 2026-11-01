@@ -1,0 +1,1032 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Vibeferatu</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IM+Fell+English+SC&family=IM+Fell+English:ital@0;1&display=swap" rel="stylesheet">
+<style>
+  :root { --ink: #dde3ec; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden; background: #000;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  canvas { display: block; }
+
+  /* ---------- silent-film intertitle cards ---------- */
+  .card {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(ellipse at center, #0d0f13 0%, #000 75%);
+    opacity: 0; pointer-events: none; transition: opacity .8s ease; z-index: 10;
+  }
+  .card.show { opacity: 1; }
+  .card::after {
+    content: ""; position: absolute; inset: -50%;
+    background-image: var(--grain); opacity: .12; mix-blend-mode: screen;
+    animation: grain .5s steps(6) infinite;
+  }
+  @keyframes grain {
+    0% { transform: translate(0,0) } 20% { transform: translate(-7%,4%) }
+    40% { transform: translate(5%,-6%) } 60% { transform: translate(-3%,8%) }
+    80% { transform: translate(8%,2%) } 100% { transform: translate(-5%,-3%) }
+  }
+  .frame {
+    position: relative; z-index: 1;
+    width: min(78vw, 760px); padding: clamp(28px, 6vw, 64px) clamp(20px, 5vw, 56px);
+    border: 3px double var(--ink); outline: 1px solid rgba(221,227,236,.45); outline-offset: 9px;
+    color: var(--ink); text-align: center;
+    font-family: "IM Fell English", Georgia, serif; font-size: clamp(18px, 3.4vw, 30px); line-height: 1.45;
+    text-shadow: 0 0 6px rgba(200,215,255,.25);
+    animation: jitter .16s steps(2) infinite;
+  }
+  @keyframes jitter { 0% { transform: translate(0,0) } 100% { transform: translate(.6px,-.8px) } }
+  .frame h1 {
+    font-family: "IM Fell English SC", Georgia, serif; font-weight: 400;
+    font-size: clamp(40px, 10vw, 96px); letter-spacing: .08em; margin: .1em 0 .15em; line-height: 1;
+  }
+  .frame .small { font-style: italic; font-size: .8em; opacity: .85; }
+  .frame .orn { font-size: 1.3em; opacity: .9; }
+  .frame .orn.flip { transform: rotate(180deg); display: inline-block; }
+  .frame .hint { font-family: "IM Fell English SC", Georgia, serif; font-size: .72em; opacity: .8; margin-top: 1.4em; letter-spacing: .06em; }
+  .frame .hint b { font-weight: 400; border: 1px solid rgba(221,227,236,.6); padding: 0 .35em; }
+  .corner { position: absolute; width: 22px; height: 22px; border: 1px solid var(--ink); opacity: .7; }
+  .corner.tl { top: 8px; left: 8px; border-right: 0; border-bottom: 0; }
+  .corner.tr { top: 8px; right: 8px; border-left: 0; border-bottom: 0; }
+  .corner.bl { bottom: 8px; left: 8px; border-right: 0; border-top: 0; }
+  .corner.br { bottom: 8px; right: 8px; border-left: 0; border-top: 0; }
+
+  /* ---------- HUD ---------- */
+  #hint {
+    position: fixed; left: 50%; bottom: max(22px, env(safe-area-inset-bottom)); transform: translateX(-50%);
+    color: rgba(221,227,236,.75); font-family: "IM Fell English SC", Georgia, serif; font-size: 15px;
+    letter-spacing: .12em; text-shadow: 0 0 8px #000; transition: opacity 1.2s; opacity: 0; pointer-events: none; z-index: 5;
+    white-space: nowrap;
+  }
+  #hint.show { opacity: 1; }
+  #sound {
+    position: fixed; top: max(14px, env(safe-area-inset-top)); right: 14px; z-index: 20;
+    background: rgba(0,0,0,.35); color: rgba(221,227,236,.8); border: 1px solid rgba(221,227,236,.35);
+    font-family: "IM Fell English SC", Georgia, serif; font-size: 13px; letter-spacing: .1em;
+    padding: 6px 10px; cursor: pointer;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="card" class="card show">
+  <div class="frame">
+    <span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+    <div id="cardText">
+      <div class="small">a symphony of night &amp; fog</div>
+      <h1>Vibeferatu</h1>
+      <div class="orn">❦</div>
+      <div class="hint">hold <b>space</b> or touch the screen<br>to drive toward the castle</div>
+    </div>
+  </div>
+</div>
+<div id="hint">hold space · or touch · to drive</div>
+<button id="sound">sound: on</button>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+const V3 = THREE.Vector3;
+const params = new URLSearchParams(location.search);
+const DEBUG_S = params.has('s') ? parseFloat(params.get('s')) : null;
+const AUTO = params.has('auto');
+const isTouch = matchMedia('(pointer: coarse)').matches;
+
+// =====================================================================
+//  Noise helpers (deterministic)
+// =====================================================================
+function hash2(x, y) {
+  let h = (Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+function vnoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const a = hash2(xi, yi), b = hash2(xi + 1, yi), c = hash2(xi, yi + 1), d = hash2(xi + 1, yi + 1);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+function fbm(x, y, oct = 5) {
+  let s = 0, a = 0.5, f = 1;
+  for (let i = 0; i < oct; i++) { s += a * (vnoise(x * f, y * f) * 2 - 1); f *= 2.03; a *= 0.5; }
+  return s; // ~[-1,1]
+}
+function ridged(x, y, oct = 5) {
+  let s = 0, a = 0.5, f = 1;
+  for (let i = 0; i < oct; i++) { const n = 1 - Math.abs(vnoise(x * f, y * f) * 2 - 1); s += a * n * n; f *= 2.07; a *= 0.5; }
+  return s; // ~[0,1]
+}
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(1922);
+const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+
+// =====================================================================
+//  The road & the valley
+// =====================================================================
+const END = 1000;                 // length of the drive
+function roadXs(s) {
+  s = Math.min(s, END);
+  const k = 1 - 0.7 * smooth(760, END, s);
+  return (16 * Math.sin(s * 0.0105) + 8 * Math.sin(s * 0.026 + 1.7) - 8 * Math.sin(1.7)) * k;
+}
+function roadYs(s) {
+  s = Math.min(s, END);
+  return 30 - 34 * smooth(0, 480, s) + 30 * smooth(520, END, s) + 0.8 * Math.sin(s * 0.045);
+}
+const CX = roadXs(END), CZ = -(END + 240);   // the castle crag
+
+function terrainH(x, z) {
+  const s = -z;
+  const rx = roadXs(s), ry = roadYs(s);
+  const d = Math.abs(x - rx);
+  const side = x > rx ? 1 : -1;
+  const wallH = 50 + 24 * fbm(s * 0.006 + side * 13.1, 3.3, 3);
+  const rid = ridged(x * 0.012 + 3.1, z * 0.012, 5);
+  let h = ry - 0.2;
+  h += smooth(6.5, 46, d) * wallH * (0.5 + 0.8 * rid);
+  h += smooth(60, 380, d) * 90 * (0.5 + ridged(x * 0.005 + 7, z * 0.005, 4));
+  h += smooth(7, 16, d) * fbm(x * 0.09, z * 0.09, 3) * 2.8;
+  // the crag beneath the castle
+  const dx = x - CX, dz = z - CZ;
+  const r2 = dx * dx + dz * dz;
+  const r = Math.sqrt(r2);
+  h += 80 * smooth(125, 32, r) * (0.88 + 0.24 * ridged(x * 0.05, z * 0.05, 3)) + 18 * smooth(60, 0, r);
+  // mountains closing the valley behind the castle
+  h += smooth(END + 190, END + 520, s) * 70 * (0.6 + ridged(x * 0.01, z * 0.01, 4));
+  return h;
+}
+function roadPoint(s, out = new V3()) {
+  const x = roadXs(s), z = -s;
+  return out.set(x, terrainH(x, z) + 0.1, z);
+}
+
+// =====================================================================
+//  Renderer / scene / camera
+// =====================================================================
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, isTouch ? 1.5 : 1.75));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const FOG_COLOR = new THREE.Color(0.032, 0.039, 0.054);
+scene.fog = new THREE.FogExp2(FOG_COLOR, 0.0011);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 6000);
+let baseFov = 55;
+function fitFov() { baseFov = camera.aspect < 1 ? 72 : 55; camera.fov = baseFov; camera.updateProjectionMatrix(); }
+fitFov();
+
+const MOON_DIR = new V3(0.28, 0.32, -1).normalize();         // where the moon is drawn
+const MOON_LIGHT_DIR = new V3(0.35, 0.75, -1).normalize();   // a higher angle for nicer shadows
+
+// lights
+scene.add(new THREE.HemisphereLight(0x7d8cb0, 0x07080c, 0.3));
+const moonLight = new THREE.DirectionalLight(0xc4d2ff, 1.9);
+moonLight.castShadow = true;
+moonLight.shadow.mapSize.set(isTouch ? 2048 : 4096, isTouch ? 2048 : 4096);
+Object.assign(moonLight.shadow.camera, { left: -110, right: 110, top: 110, bottom: -110, near: 1, far: 900 });
+moonLight.shadow.bias = -0.0004;
+moonLight.shadow.normalBias = 0.6;
+scene.add(moonLight, moonLight.target);
+
+// =====================================================================
+//  Sky: gradient, drifting clouds, the full moon
+// =====================================================================
+const skyMat = new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false, fog: false,
+  uniforms: { uTime: { value: 0 }, uMoonDir: { value: MOON_DIR } },
+  vertexShader: /* glsl */`
+    varying vec3 vDir;
+    void main() {
+      vDir = position;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    uniform float uTime; uniform vec3 uMoonDir;
+    varying vec3 vDir;
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float noise(vec2 p) {
+      vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3. - 2. * f);
+      return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y);
+    }
+    float fbm(vec2 p) { float v = 0., a = .5; for (int i = 0; i < 6; i++) { v += a * noise(p); p = p * 2.03 + 17.1; a *= .5; } return v; }
+    void main() {
+      vec3 d = normalize(vDir);
+      float h = d.y;
+      vec3 zen = vec3(0.003, 0.0045, 0.009);
+      vec3 hor = vec3(0.05, 0.06, 0.08);
+      vec3 col = mix(hor, zen, smoothstep(-0.02, 0.55, h));
+      float md = max(dot(d, uMoonDir), 0.);
+      col += vec3(0.30, 0.33, 0.42) * pow(md, 90.) + vec3(0.07, 0.08, 0.11) * pow(md, 10.);
+      // moon disk with faint maria
+      float disk = smoothstep(0.99955, 0.99972, md);
+      float maria = fbm(d.xy * 260. + 3.0);
+      col += disk * vec3(2.6, 2.7, 3.0) * (0.78 + 0.3 * maria);
+      // clouds
+      float hh = max(h, 0.015);
+      vec2 cp = d.xz / (hh + 0.22) * 1.25 + vec2(uTime * 0.008, uTime * 0.003);
+      float c = fbm(cp);
+      float c2 = fbm(cp * 2.4 - vec2(uTime * 0.01, 0.));
+      c = smoothstep(0.40, 0.82, c * 0.75 + c2 * 0.35);
+      float lit = 0.18 + pow(md, 8.) * 1.6 + pow(md, 40.) * 2.5;
+      vec3 cloudCol = vec3(0.075, 0.085, 0.105) * lit;
+      // thin wispy veil over the moon
+      float veil = smoothstep(0.35, 0.9, fbm(cp * 0.7 + 4.)) * 0.55;
+      col = mix(col, cloudCol + col * 0.25, c * smoothstep(-0.03, 0.12, h) * 0.92);
+      col = mix(col, col * 0.55 + cloudCol * 0.6, veil * disk);
+      gl_FragColor = vec4(col, 1.);
+    }`
+});
+const sky = new THREE.Mesh(new THREE.SphereGeometry(3000, 48, 24), skyMat);
+sky.renderOrder = -10;
+scene.add(sky);
+
+// distant mountain silhouettes (atmospheric layers)
+function mountainRing(R, base, vary, color, seed) {
+  const N = 360, pos = [], idx = [];
+  for (let i = 0; i <= N; i++) {
+    const a = (i / N) * Math.PI * 2;
+    const x = Math.cos(a) * R, z = -650 + Math.sin(a) * R;
+    const top = base + vary * ridged(Math.cos(a) * 4 + seed, Math.sin(a) * 4 + seed, 6);
+    pos.push(x, -200, z, x, top, z);
+    if (i < N) { const k = i * 2; idx.push(k, k + 1, k + 2, k + 1, k + 3, k + 2); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  return new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color, fog: false, side: THREE.DoubleSide }));
+}
+scene.add(mountainRing(1750, 120, 330, new THREE.Color(0.042, 0.050, 0.067), 11));
+scene.add(mountainRing(1150, 60, 260, new THREE.Color(0.036, 0.043, 0.059), 3));
+
+// =====================================================================
+//  Terrain
+// =====================================================================
+function buildTerrain() {
+  const TW = 900, TL = 1700;
+  const sx = isTouch ? 220 : 300, sz = isTouch ? 420 : 570;
+  const geo = new THREE.PlaneGeometry(TW, TL, sx, sz);
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(0, 0, -650);
+  const p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setY(i, terrainH(p.getX(i), p.getZ(i)));
+  geo.computeVertexNormals();
+  const n = geo.attributes.normal;
+  const col = new Float32Array(p.count * 3);
+  const rock = new THREE.Color(0.030, 0.032, 0.038), rock2 = new THREE.Color(0.016, 0.017, 0.020);
+  const snow = new THREE.Color(0.40, 0.43, 0.50);
+  const c = new THREE.Color();
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), z = p.getZ(i), ny = n.getY(i);
+    const d = Math.abs(x - roadXs(-z));
+    c.copy(rock).lerp(rock2, clamp(0.5 + fbm(x * 0.03, z * 0.03, 3), 0, 1));
+    let sn = smooth(0.62, 0.9, ny) * smooth(-0.15, 0.35, fbm(x * 0.045 + 5, z * 0.045, 4) + 0.1);
+    sn = Math.max(sn, (1 - smooth(6, 13, d)) * 0.9);
+    c.lerp(snow, sn);
+    col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0, flatShading: true });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.receiveShadow = true; mesh.castShadow = true;
+  return mesh;
+}
+scene.add(buildTerrain());
+
+// the dirt road: a pale rutted ribbon
+function roadTexture() {
+  const cv = document.createElement('canvas'); cv.width = 256; cv.height = 512;
+  const g = cv.getContext('2d');
+  g.fillStyle = '#9a9ca2'; g.fillRect(0, 0, 256, 512);
+  for (let i = 0; i < 9000; i++) {
+    const v = 120 + Math.random() * 90 | 0;
+    g.fillStyle = `rgba(${v},${v},${v + 6},${Math.random() * 0.35})`;
+    g.fillRect(Math.random() * 256, Math.random() * 512, 1 + Math.random() * 3, 1 + Math.random() * 3);
+  }
+  for (const u of [0.3, 0.7]) {
+    const grd = g.createLinearGradient(u * 256 - 22, 0, u * 256 + 22, 0);
+    grd.addColorStop(0, 'rgba(40,40,45,0)'); grd.addColorStop(0.5, 'rgba(40,40,45,0.55)'); grd.addColorStop(1, 'rgba(40,40,45,0)');
+    g.fillStyle = grd; g.fillRect(u * 256 - 22, 0, 44, 512);
+  }
+  for (const [a, b] of [[0, 34], [222, 256]]) {
+    const grd = g.createLinearGradient(a, 0, b, 0);
+    const out = a === 0;
+    grd.addColorStop(0, out ? 'rgba(205,210,220,1)' : 'rgba(205,210,220,0)');
+    grd.addColorStop(1, out ? 'rgba(205,210,220,0)' : 'rgba(205,210,220,1)');
+    g.fillStyle = grd; g.fillRect(a, 0, b - a, 512);
+  }
+  const t = new THREE.CanvasTexture(cv);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
+  return t;
+}
+function buildRoad() {
+  const pos = [], uv = [], idx = [];
+  const HW = 3.6; let k = 0;
+  for (let s = -60; s <= END + 45; s += 1.5) {
+    const x = roadXs(s), z = -s;
+    const dx = (roadXs(s + 0.5) - roadXs(s - 0.5));
+    const r = new V3(1, 0, dx).normalize();
+    for (const side of [-1, 1]) {
+      const px = x + r.x * HW * side, pz = z + r.z * HW * side;
+      pos.push(px, terrainH(px, pz) + 0.09, pz);
+      uv.push(side < 0 ? 0 : 1, s / 9);
+    }
+    if (s > -60) idx.push(k - 2, k, k - 1, k - 1, k, k + 1);
+    k += 2;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx); g.computeVertexNormals();
+  const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ map: roadTexture(), color: 0x8c919c, roughness: 1 }));
+  m.receiveShadow = true;
+  return m;
+}
+scene.add(buildRoad());
+
+// boulders
+function buildRocks() {
+  const base = new THREE.IcosahedronGeometry(1, 1);
+  const p = base.attributes.position, cache = new Map();
+  for (let i = 0; i < p.count; i++) {
+    const key = `${p.getX(i).toFixed(3)},${p.getY(i).toFixed(3)},${p.getZ(i).toFixed(3)}`;
+    if (!cache.has(key)) cache.set(key, 0.72 + rng() * 0.5);
+    const f = cache.get(key);
+    p.setXYZ(i, p.getX(i) * f, p.getY(i) * f, p.getZ(i) * f);
+  }
+  base.computeVertexNormals();
+  const mat = new THREE.MeshStandardMaterial({ color: 0x2b2f36, roughness: 1, flatShading: true });
+  const N = 340, mesh = new THREE.InstancedMesh(base, mat, N), o = new THREE.Object3D();
+  for (let i = 0; i < N; i++) {
+    const s = -40 + rng() * (END + 120), side = rng() < 0.5 ? -1 : 1;
+    const sc = 0.25 + Math.pow(rng(), 3) * 3.8;
+    const d = Math.max(4.6 + sc * 1.9, 5 + Math.pow(rng(), 2) * 32);
+    const x = roadXs(s) + side * d, z = -s;
+    o.position.set(x, terrainH(x, z) + sc * 0.15, z);
+    o.scale.set(sc * (0.8 + rng() * 0.6), sc * (0.5 + rng() * 0.5), sc * (0.8 + rng() * 0.6));
+    o.rotation.set(rng() * 6, rng() * 6, rng() * 6);
+    o.updateMatrix(); mesh.setMatrixAt(i, o.matrix);
+  }
+  mesh.castShadow = mesh.receiveShadow = true;
+  return mesh;
+}
+scene.add(buildRocks());
+
+// dead, gnarled trees
+function treeGeometry(r) {
+  const parts = [], up = new V3(0, 1, 0);
+  function branch(start, dir, len, rad, depth) {
+    const g = new THREE.CylinderGeometry(rad * 0.62, rad, len, 5, 1);
+    g.translate(0, len / 2, 0);
+    g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(up, dir));
+    g.translate(start.x, start.y, start.z);
+    parts.push(g);
+    if (depth === 0) return;
+    const end = start.clone().addScaledVector(dir, len);
+    const n = 2 + (r() < 0.35 ? 1 : 0);
+    for (let k = 0; k < n; k++) {
+      const nd = dir.clone().add(new V3(r() - 0.5, r() * 0.5 - 0.05, r() - 0.5).multiplyScalar(1.5)).normalize();
+      branch(end, nd, len * (0.55 + r() * 0.25), rad * 0.62, depth - 1);
+    }
+  }
+  branch(new V3(0, -0.5, 0), new V3((r() - 0.5) * 0.3, 1, (r() - 0.5) * 0.3).normalize(), 3.6, 0.3, 4);
+  return mergeGeometries(parts);
+}
+function buildTrees() {
+  const grp = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color: 0x141518, roughness: 1, flatShading: true });
+  const o = new THREE.Object3D();
+  for (let v = 0; v < 3; v++) {
+    const N = 40, mesh = new THREE.InstancedMesh(treeGeometry(mulberry32(77 + v)), mat, N);
+    for (let i = 0; i < N; i++) {
+      const s = -30 + rng() * (END + 100), side = rng() < 0.5 ? -1 : 1;
+      const d = 8 + rng() * 30;
+      const x = roadXs(s) + side * d, z = -s;
+      o.position.set(x, terrainH(x, z) - 0.3, z);
+      const sc = 0.8 + rng() * 1.1;
+      o.scale.setScalar(sc);
+      o.rotation.set((rng() - 0.5) * 0.25, rng() * 6.3, (rng() - 0.5) * 0.25);
+      o.updateMatrix(); mesh.setMatrixAt(i, o.matrix);
+    }
+    mesh.castShadow = true;
+    grp.add(mesh);
+  }
+  return grp;
+}
+scene.add(buildTrees());
+
+// =====================================================================
+//  The castle
+// =====================================================================
+const castleMats = [];
+let castleTopY = 0;
+const castleWindows = [];
+function buildCastle() {
+  const g = new THREE.Group();
+  const stone = new THREE.MeshStandardMaterial({ color: 0x2a2d34, roughness: 1, flatShading: true, fog: false });
+  const roofM = new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.8, flatShading: true, fog: false });
+  stone.userData.base = stone.color.clone(); roofM.userData.base = roofM.color.clone();
+  castleMats.push(stone, roofM);
+  const darkWin = new THREE.MeshBasicMaterial({ color: 0x010102, fog: false });
+  const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); g.add(m); return m; };
+  const FOUND = 34;
+  const winGeo = new THREE.PlaneGeometry(1.5, 3.2);
+  function win(x, y, z, lit, rotY = 0) {
+    const mat = lit ? new THREE.MeshBasicMaterial({ color: new THREE.Color(5, 3.8, 2.0), fog: false, transparent: true }) : darkWin;
+    const m = add(winGeo, mat, x, y, z); m.rotation.y = rotY;
+    if (lit) castleWindows.push({ m, ph: rng() * 10 });
+  }
+  function tower(x, z, r, h, roofH, lit = []) {
+    add(new THREE.CylinderGeometry(r, r * 1.12, h + FOUND, 12), stone, x, (h - FOUND) / 2, z);
+    add(new THREE.CylinderGeometry(r * 1.2, r, 1.8, 12), stone, x, h + 0.2, z);
+    add(new THREE.ConeGeometry(r * 1.32, roofH, 12), roofM, x, h + 1 + roofH / 2, z);
+    add(new THREE.CylinderGeometry(0.06, 0.16, roofH * 0.22, 4), roofM, x, h + 1 + roofH * 1.08, z);
+    for (const fy of lit) win(x, h * fy, z + r + 0.05, true);
+    castleTopY = Math.max(castleTopY, h + 1 + roofH * 1.2);
+  }
+  function gable(w, len, hgt, x, y, z, alongX) {
+    const sh = new THREE.Shape(); sh.moveTo(-w / 2, 0); sh.lineTo(w / 2, 0); sh.lineTo(0, hgt); sh.closePath();
+    const rg = new THREE.ExtrudeGeometry(sh, { depth: len, bevelEnabled: false });
+    rg.translate(0, 0, -len / 2);
+    if (alongX) rg.rotateY(Math.PI / 2);
+    add(rg, roofM, x, y, z);
+  }
+  // great hall
+  add(new THREE.BoxGeometry(34, 24 + FOUND, 16), stone, 0, (24 - FOUND) / 2, 0);
+  gable(17, 35, 13, 0, 24, 0, true);
+  // east wing
+  add(new THREE.BoxGeometry(13, 18 + FOUND, 26), stone, 20, (18 - FOUND) / 2, 5);
+  gable(14, 27, 10, 20, 18, 5, false);
+  // west chapel
+  add(new THREE.BoxGeometry(11, 14 + FOUND, 14), stone, -23, (14 - FOUND) / 2, 4);
+  gable(12, 15, 9, -23, 14, 4, false);
+  // windows of the hall (+z face)
+  for (let i = 0; i < 7; i++) {
+    const x = -14 + i * 4.6;
+    win(x, 16, 8.06, i === 2 || i === 5);
+    win(x, 8, 8.06, i === 4);
+  }
+  for (let i = 0; i < 3; i++) win(20, 6 + i * 5, 18.06, i === 1);
+  // towers
+  tower(-5, 2, 6, 54, 30, [0.72]);
+  tower(7, -3, 2.4, 47, 20);
+  tower(-17, -8, 3.6, 34, 16);
+  tower(17, -8, 3.6, 31, 15);
+  tower(-17, 8.5, 3.8, 37, 18, [0.6]);
+  tower(13, 9, 3.2, 29, 14);
+  tower(27, 18, 3.0, 25, 13, [0.7]);
+  tower(27, -6, 2.6, 30, 15);
+  tower(-29, 9, 2.6, 21, 12);
+  // a low curtain wall with crenellations in front
+  add(new THREE.BoxGeometry(70, 9 + FOUND, 2.2), stone, -2, (9 - FOUND) / 2, 24);
+  for (let i = 0; i < 24; i++) add(new THREE.BoxGeometry(1.5, 1.6, 2.2), stone, -36 + i * 2.95, 9.8, 24);
+  g.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
+  return g;
+}
+const castle = buildCastle();
+const castleBaseY = terrainH(CX, CZ) - 3;
+castle.position.set(CX, castleBaseY, CZ);
+castle.rotation.y = 0.12;
+scene.add(castle);
+const castleLook = new V3(CX, castleBaseY + castleTopY * 0.55, CZ);
+
+// bats circling the towers
+const bats = [];
+{
+  const wing = new THREE.BufferGeometry();
+  wing.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0.35, 0, 0, -0.35, 1.6, 0.15, -0.6, 0, 0, -0.35, 1.6, 0.15, -0.6, 1.1, 0, 0.3], 3));
+  wing.computeVertexNormals();
+  const bm = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide, fog: false });
+  for (let i = 0; i < 16; i++) {
+    const b = new THREE.Group();
+    const l = new THREE.Mesh(wing, bm), r = new THREE.Mesh(wing, bm); r.scale.x = -1;
+    b.add(l, r, new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.25, 0.8), bm));
+    b.scale.setScalar(1.6 + rng());
+    scene.add(b);
+    bats.push({ b, l, r, rad: 30 + rng() * 45, h: 20 + rng() * 60, sp: (0.25 + rng() * 0.35) * (rng() < 0.5 ? -1 : 1), ph: rng() * 6.28, fl: 9 + rng() * 6 });
+  }
+}
+
+// =====================================================================
+//  The motor car (circa 1910)
+// =====================================================================
+function buildCar() {
+  const car = new THREE.Group();
+  const body = new THREE.Group(); car.add(body);
+  const M = (c, r = 0.6, m = 0.1, extra = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: m, ...extra });
+  const paint = M(0x0d0d10, 0.32, 0.5), dull = M(0x121214, 0.85, 0.1), brass = M(0xa8843e, 0.28, 1.0);
+  const leather = M(0x1d1510, 0.9, 0), rubber = M(0x070707, 0.95, 0), wood = M(0x2b2017, 0.8, 0), coat = M(0x0e0e10, 0.95, 0);
+  const fenderMat = M(0x0d0d10, 0.35, 0.5, { side: THREE.DoubleSide });
+  const add = (geo, mat, x, y, z, parent = body) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = m.receiveShadow = true; parent.add(m); return m; };
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (a, b, h, n = 12) => new THREE.CylinderGeometry(a, b, h, n);
+
+  add(box(0.9, 0.12, 3.5), dull, 0, 0.52, 0);              // chassis
+  add(box(0.84, 0.5, 1.05), paint, 0, 0.93, 1.12);          // hood
+  const hoodTop = add(cyl(0.42, 0.42, 1.05, 16), paint, 0, 1.15, 1.12); hoodTop.rotation.x = Math.PI / 2; hoodTop.scale.set(1, 1, 0.35);
+  add(box(0.94, 0.8, 0.1), brass, 0, 0.98, 1.68);           // radiator shell
+  add(box(0.78, 0.64, 0.04), dull, 0, 0.98, 1.735);         // grille
+  add(cyl(0.05, 0.05, 0.08, 10), brass, 0, 1.42, 1.68);     // cap
+  add(box(1.12, 0.7, 0.16), paint, 0, 1.0, 0.56);           // cowl
+  add(box(1.32, 0.62, 1.95), paint, 0, 0.95, -0.47);        // tub
+  add(box(1.36, 0.06, 1.99), brass, 0, 1.27, -0.47);        // trim
+  add(box(1.18, 0.55, 0.16), leather, 0, 1.52, -0.2);       // front seat back
+  add(box(1.18, 0.62, 0.16), leather, 0, 1.56, -1.36);      // rear seat back
+  // windshield
+  add(box(1.06, 0.6, 0.02), M(0x445566, 0.05, 0.9, { transparent: true, opacity: 0.22 }), 0, 1.66, 0.6);
+  add(box(1.12, 0.04, 0.04), brass, 0, 1.97, 0.6);
+  add(box(1.12, 0.04, 0.04), brass, 0, 1.35, 0.6);
+  for (const x of [-0.56, 0.56]) add(box(0.04, 0.66, 0.04), brass, x, 1.66, 0.6);
+  // canopy
+  for (const x of [-0.66, 0.66]) for (const z of [0.66, -1.44]) add(cyl(0.025, 0.025, 0.98, 6), dull, x, 1.77, z);
+  add(box(1.44, 0.06, 2.24), dull, 0, 2.28, -0.4);
+  const bow = add(cyl(0.72, 0.72, 2.24, 16, 1), dull, 0, 2.12, -0.4); bow.rotation.x = Math.PI / 2; bow.scale.set(1, 1, 0.24);
+  // steering
+  const sw = add(new THREE.TorusGeometry(0.19, 0.02, 6, 20), wood, -0.3, 1.58, 0.28); sw.rotation.x = -1.0;
+  const col = add(cyl(0.02, 0.02, 0.7, 6), dull, -0.3, 1.28, 0.44); col.rotation.x = -0.6;
+  // driver (cap) & passenger (top hat)
+  add(box(0.44, 0.62, 0.34), coat, -0.3, 1.62, -0.02);
+  add(new THREE.SphereGeometry(0.12, 12, 10), M(0x3a3430, 0.8, 0), -0.3, 2.04, 0);
+  add(cyl(0.135, 0.135, 0.08, 12), coat, -0.3, 2.14, 0);
+  add(box(0.22, 0.02, 0.14), coat, -0.3, 2.11, 0.1);
+  add(box(0.44, 0.62, 0.34), coat, 0.3, 1.62, -0.02);
+  add(new THREE.SphereGeometry(0.12, 12, 10), M(0x3a3430, 0.8, 0), 0.3, 2.04, 0);
+  add(cyl(0.18, 0.18, 0.015, 16), coat, 0.3, 2.1, 0);
+  add(cyl(0.1, 0.11, 0.15, 14), coat, 0.3, 2.18, 0);
+  // fenders & running boards
+  const fender = (a, b) => { const g = new THREE.CylinderGeometry(0.52, 0.52, 0.3, 18, 1, true, a, b); g.rotateZ(Math.PI / 2); return g; };
+  for (const x of [-0.78, 0.78]) {
+    add(fender(0.1, Math.PI - 0.5), fenderMat, x, 0.44, 1.25);
+    add(fender(0.45, Math.PI - 0.55), fenderMat, x, 0.44, -1.15);
+    add(box(0.3, 0.04, 1.5), dull, x, 0.5, 0.05);
+  }
+  // spare tire
+  add(new THREE.TorusGeometry(0.38, 0.06, 8, 24), rubber, 0, 0.95, -1.52);
+  // headlamps
+  const lamps = [];
+  const lensMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(6, 5.2, 3.6) });
+  for (const x of [-0.6, 0.6]) {
+    const h = add(cyl(0.11, 0.13, 0.24, 14), brass, x, 1.08, 1.6); h.rotation.x = Math.PI / 2;
+    add(box(0.04, 0.2, 0.04), dull, x, 0.92, 1.6);
+    const lens = add(new THREE.CircleGeometry(0.1, 16), lensMat, x, 1.08, 1.725); lens.castShadow = false;
+    lamps.push(new V3(x, 1.08, 1.74));
+  }
+  for (const x of [-0.62, 0.62]) {   // little side oil lamps
+    add(box(0.1, 0.16, 0.1), brass, x, 1.22, 0.62);
+    add(box(0.07, 0.1, 0.02), lensMat, x, 1.22, 0.675);
+  }
+  // wheels
+  const wheels = [];
+  const spoke = box(0.03, 0.36, 0.035); spoke.translate(0, 0.18, 0);
+  for (const [x, z] of [[-0.78, 1.25], [0.78, 1.25], [-0.78, -1.15], [0.78, -1.15]]) {
+    const w = new THREE.Group(); w.position.set(x, 0.42, z); car.add(w);
+    const tire = add(new THREE.TorusGeometry(0.37, 0.055, 8, 28), rubber, 0, 0, 0, w); tire.rotation.y = Math.PI / 2;
+    const rim = add(new THREE.TorusGeometry(0.32, 0.018, 6, 28), wood, 0, 0, 0, w); rim.rotation.y = Math.PI / 2;
+    const hub = add(cyl(0.07, 0.07, 0.16, 10), brass, 0, 0, 0, w); hub.rotation.z = Math.PI / 2;
+    for (let k = 0; k < 10; k++) { const sp = add(spoke, wood, 0, 0, 0, w); sp.rotation.x = (k / 10) * Math.PI * 2; }
+    wheels.push(w);
+  }
+  return { car, body, wheels, lamps, lensMat };
+}
+const CAR = buildCar();
+scene.add(CAR.car);
+
+// headlights + visible beams in the fog
+const beamMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false,
+  uniforms: { uInt: { value: 1 } },
+  vertexShader: /* glsl */`
+    varying float vA; varying vec3 vN; varying vec3 vV;
+    void main() {
+      vA = uv.y;
+      vec4 mv = modelViewMatrix * vec4(position, 1.);
+      vN = normalize(normalMatrix * normal); vV = normalize(-mv.xyz);
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: /* glsl */`
+    uniform float uInt; varying float vA; varying vec3 vN; varying vec3 vV;
+    void main() {
+      float edge = pow(abs(dot(normalize(vN), normalize(vV))), 1.6);
+      float a = pow(vA, 2.2) * edge * 0.10 * uInt;
+      gl_FragColor = vec4(vec3(1., 0.92, 0.78) * a, a);
+    }`
+});
+const headlights = [];
+for (const lp of CAR.lamps) {
+  const sl = new THREE.SpotLight(0xffe0b0, 260, 75, 0.42, 0.65, 1.6);
+  sl.position.copy(lp);
+  sl.target.position.set(lp.x * 1.5, -0.6, 26);
+  CAR.car.add(sl, sl.target);
+  headlights.push(sl);
+  const cg = new THREE.ConeGeometry(3.6, 24, 24, 1, true);
+  cg.translate(0, -12, 0); cg.rotateX(-Math.PI / 2 - 0.035);
+  const beam = new THREE.Mesh(cg, beamMat); beam.position.copy(lp);
+  CAR.car.add(beam);
+}
+
+// =====================================================================
+//  Ground fog (billboards) and snow
+// =====================================================================
+function fogTexture() {
+  const cv = document.createElement('canvas'); cv.width = cv.height = 128;
+  const g = cv.getContext('2d');
+  for (let i = 0; i < 14; i++) {
+    const x = 34 + Math.random() * 60, y = 40 + Math.random() * 48, r = 18 + Math.random() * 34;
+    const grd = g.createRadialGradient(x, y, 0, x, y, r);
+    grd.addColorStop(0, 'rgba(255,255,255,0.22)'); grd.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grd; g.fillRect(0, 0, 128, 128);
+  }
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const fogTex = fogTexture();
+const fogPuffs = [];
+function addPuff(x, y, z, sc, op) {
+  const m = new THREE.SpriteMaterial({ map: fogTex, color: new THREE.Color(0.075, 0.085, 0.11), transparent: true, opacity: op, depthWrite: false, fog: true });
+  const sp = new THREE.Sprite(m); sp.position.set(x, y, z); sp.scale.set(sc * 1.8, sc, 1);
+  scene.add(sp); fogPuffs.push({ sp, x, ph: rng() * 6.28, sp0: 0.5 + rng() });
+}
+for (let i = 0; i < 120; i++) {
+  const s = -20 + rng() * (END + 80);
+  const x = roadXs(s) + (rng() - 0.5) * 80, z = -s;
+  addPuff(x, roadYs(s) + 1 + rng() * 5, z, 20 + rng() * 30, 0.10 + rng() * 0.16);
+}
+for (let i = 0; i < 30; i++) {   // mist curling around the crag
+  const a = rng() * 6.28, r = 30 + rng() * 120;
+  addPuff(CX + Math.cos(a) * r, castleBaseY - 70 + rng() * 60, CZ + Math.sin(a) * r * 0.6 + 40, 90 + rng() * 120, 0.08 + rng() * 0.12);
+}
+
+const SNOW_N = isTouch ? 2500 : 5000, SB = new V3(90, 50, 90);
+const snowPos = new Float32Array(SNOW_N * 3), snowVel = new Float32Array(SNOW_N);
+for (let i = 0; i < SNOW_N; i++) {
+  snowPos[i * 3] = (rng() - 0.5) * SB.x; snowPos[i * 3 + 1] = (rng() - 0.5) * SB.y; snowPos[i * 3 + 2] = (rng() - 0.5) * SB.z;
+  snowVel[i] = 0.8 + rng() * 1.6;
+}
+const snowGeo = new THREE.BufferGeometry();
+snowGeo.setAttribute('position', new THREE.BufferAttribute(snowPos, 3));
+const flakeTex = (() => {
+  const cv = document.createElement('canvas'); cv.width = cv.height = 32;
+  const g = cv.getContext('2d'); const grd = g.createRadialGradient(16, 16, 0, 16, 16, 16);
+  grd.addColorStop(0, 'rgba(255,255,255,1)'); grd.addColorStop(0.4, 'rgba(255,255,255,.5)'); grd.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grd; g.fillRect(0, 0, 32, 32); return new THREE.CanvasTexture(cv);
+})();
+const snow = new THREE.Points(snowGeo, new THREE.PointsMaterial({ size: 0.075, map: flakeTex, color: 0xdfe7ff, transparent: true, opacity: 0.85, depthWrite: false }));
+snow.frustumCulled = false;
+scene.add(snow);
+
+// =====================================================================
+//  Post-processing: bloom + silent-film look (mono tint, grain, flicker, iris)
+// =====================================================================
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.7, 0.9);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+const filmPass = new ShaderPass({
+  uniforms: {
+    tDiffuse: { value: null }, uTime: { value: 0 }, uAspect: { value: innerWidth / innerHeight },
+    uIris: { value: 0 }, uIrisC: { value: new THREE.Vector2(0.5, 0.5) }, uRes: { value: new THREE.Vector2(innerWidth, innerHeight) }
+  },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.); }`,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse; uniform float uTime, uAspect, uIris; uniform vec2 uIrisC, uRes;
+    varying vec2 vUv;
+    float rand(vec2 c) { return fract(sin(dot(c, vec2(12.9898, 78.233))) * 43758.5453); }
+    void main() {
+      float fr = floor(uTime * 18.);
+      vec2 uv = vUv;
+      uv.y += (rand(vec2(fr, 1.)) - .5) * 0.0016;   // gate weave
+      uv.x += (rand(vec2(fr, 2.)) - .5) * 0.0009;
+      vec3 c = texture2D(tDiffuse, uv).rgb;
+      float l = dot(c, vec3(0.299, 0.587, 0.114));
+      l = pow(l, 1.08);
+      l = mix(l, smoothstep(0., 1., l), 0.35);
+      vec3 col = l * vec3(0.80, 0.89, 1.06) + vec3(0.004, 0.008, 0.016);
+      // flicker
+      col *= 0.95 + 0.07 * rand(vec2(fr, 3.));
+      // grain
+      float gr = rand(floor(vUv * uRes / 1.5) + fract(uTime * 7.3) * 91.7) - .5;
+      col += gr * 0.055 * (0.6 + l);
+      // scratches
+      if (rand(vec2(fr, 6.)) > 0.72) {
+        float sx = rand(vec2(fr, 5.));
+        col += smoothstep(0.0011, 0., abs(vUv.x - sx)) * 0.10 * step(0.3, rand(vec2(floor(vUv.y * 9.), fr)));
+      }
+      // dust specks
+      for (int i = 0; i < 2; i++) {
+        float fi = float(i);
+        vec2 p = vec2(rand(vec2(fr, 7. + fi)), rand(vec2(fr, 9. + fi)));
+        float s = (0.002 + 0.004 * rand(vec2(fr, 11. + fi)));
+        float d = length((vUv - p) * vec2(uAspect, 1.));
+        col = mix(col, vec3(0.), smoothstep(s, s * 0.3, d) * step(0.55, rand(vec2(fr, 13. + fi))) * 0.85);
+      }
+      // vignette
+      float v = length((vUv - .5) * vec2(uAspect * 0.85, 1.));
+      col *= mix(1., 0.25, smoothstep(0.35, 0.95, v));
+      // iris
+      float id = length((vUv - uIrisC) * vec2(uAspect, 1.));
+      col *= smoothstep(uIris, uIris - 0.02, id);
+      gl_FragColor = vec4(col, 1.);
+    }`
+});
+composer.addPass(filmPass);
+
+// grain texture for the html cards
+{
+  const cv = document.createElement('canvas'); cv.width = cv.height = 192;
+  const g = cv.getContext('2d'); const im = g.createImageData(192, 192);
+  for (let i = 0; i < im.data.length; i += 4) { const v = Math.random() * 255; im.data[i] = im.data[i + 1] = im.data[i + 2] = v; im.data[i + 3] = 255; }
+  g.putImageData(im, 0, 0);
+  document.documentElement.style.setProperty('--grain', `url(${cv.toDataURL()})`);
+}
+
+// =====================================================================
+//  Sound: wind, the motor's putter, a slow organ
+// =====================================================================
+const sound = {
+  ctx: null, on: true,
+  start() {
+    if (this.ctx) { this.ctx.resume(); return; }
+    const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+    const ctx = this.ctx = new AC();
+    const master = this.master = ctx.createGain(); master.gain.value = this.on ? 0.9 : 0; master.connect(ctx.destination);
+    const buf = ctx.createBuffer(1, ctx.sampleRate * 3, ctx.sampleRate);
+    const data = buf.getChannelData(0); for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    // wind
+    const wind = ctx.createBufferSource(); wind.buffer = buf; wind.loop = true;
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 450; bp.Q.value = 0.8;
+    const lfo = ctx.createOscillator(); lfo.frequency.value = 0.11;
+    const lfoG = ctx.createGain(); lfoG.gain.value = 260; lfo.connect(lfoG).connect(bp.frequency);
+    const wg = ctx.createGain(); wg.gain.value = 0.10;
+    const gust = ctx.createOscillator(); gust.frequency.value = 0.07; const gustG = ctx.createGain(); gustG.gain.value = 0.06;
+    gust.connect(gustG).connect(wg.gain);
+    wind.connect(bp).connect(wg).connect(master);
+    wind.start(); lfo.start(); gust.start();
+    // engine
+    const eng = ctx.createOscillator(); eng.type = 'sawtooth'; eng.frequency.value = 36;
+    const elp = ctx.createBiquadFilter(); elp.type = 'lowpass'; elp.frequency.value = 280;
+    const am = ctx.createGain(); am.gain.value = 0.5;
+    const putt = ctx.createOscillator(); putt.type = 'square'; putt.frequency.value = 6;
+    const puttG = ctx.createGain(); puttG.gain.value = 0.5; putt.connect(puttG).connect(am.gain);
+    const eg = ctx.createGain(); eg.gain.value = 0;
+    eng.connect(elp).connect(am).connect(eg).connect(master);
+    eng.start(); putt.start();
+    Object.assign(this, { eng, putt, eg, elp });
+    // organ drone, cycling through a few gloomy chords
+    const olp = ctx.createBiquadFilter(); olp.type = 'lowpass'; olp.frequency.value = 650;
+    const og = ctx.createGain(); og.gain.value = 0.0; og.gain.setTargetAtTime(0.05, ctx.currentTime, 3);
+    const trem = ctx.createOscillator(); trem.frequency.value = 4.6; const tremG = ctx.createGain(); tremG.gain.value = 0.008;
+    trem.connect(tremG).connect(og.gain); trem.start();
+    olp.connect(og).connect(master);
+    const chords = [[55, 110, 130.81, 164.81], [43.65, 87.31, 130.81, 207.65], [36.71, 73.42, 146.83, 174.61], [41.2, 82.41, 123.47, 155.56]];
+    const voices = chords[0].map(f => {
+      const o = ctx.createOscillator(); o.type = 'triangle'; o.frequency.value = f;
+      const o2 = ctx.createOscillator(); o2.type = 'sine'; o2.frequency.value = f * 2.003;
+      const vg = ctx.createGain(); vg.gain.value = 0.22;
+      o.connect(vg); o2.connect(vg); vg.connect(olp); o.start(); o2.start();
+      return [o, o2];
+    });
+    let ci = 0;
+    setInterval(() => {
+      ci = (ci + 1) % chords.length;
+      voices.forEach(([o, o2], k) => {
+        o.frequency.setTargetAtTime(chords[ci][k], ctx.currentTime, 0.4);
+        o2.frequency.setTargetAtTime(chords[ci][k] * 2.003, ctx.currentTime, 0.4);
+      });
+    }, 7000);
+  },
+  update(spd) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.eng.frequency.setTargetAtTime(32 + spd * 3.2, t, 0.15);
+    this.putt.frequency.setTargetAtTime(5 + spd * 1.3, t, 0.15);
+    this.elp.frequency.setTargetAtTime(240 + spd * 25, t, 0.2);
+    this.eg.gain.setTargetAtTime(0.05 + spd * 0.012, t, 0.2);
+  },
+  toggle() {
+    this.on = !this.on;
+    if (this.master) this.master.gain.setTargetAtTime(this.on ? 0.9 : 0, this.ctx.currentTime, 0.1);
+    soundBtn.textContent = 'sound: ' + (this.on ? 'on' : 'off');
+  }
+};
+const soundBtn = document.getElementById('sound');
+soundBtn.addEventListener('pointerdown', e => { e.stopPropagation(); });
+soundBtn.addEventListener('click', e => { e.stopPropagation(); sound.start(); sound.toggle(); });
+
+// =====================================================================
+//  Story, input & state
+// =====================================================================
+const cardEl = document.getElementById('card'), cardText = document.getElementById('cardText');
+const hintEl = document.getElementById('hint');
+let cardTimer = 0;
+function showCard(html, hold) {
+  cardText.innerHTML = html;
+  cardEl.classList.add('show');
+  clearTimeout(cardTimer);
+  if (hold) cardTimer = setTimeout(() => cardEl.classList.remove('show'), hold * 1000);
+}
+const STORY = [
+  { at: 300, html: `<div class="orn">❦</div><p>Deeper and deeper the road wound into the pass,<br>and the night grew strangely cold&hellip;</p>` },
+  { at: 690, html: `<div class="orn">❦</div><p>And there, upon the crag,<br>the castle was waiting.</p>` },
+];
+
+let state = 'intro';           // intro → drive → end
+let s = 0, speed = 0, throttle = false, startT = 0, endT = 0, lastInputT = 0, storyIdx = 0;
+const MAX_SPEED = 17;
+
+function begin() {
+  state = 'drive'; startT = clock.elapsedTime; s = 0; speed = 0; storyIdx = 0;
+  cardEl.classList.remove('show');
+  snapCamera = true;
+}
+function press() {
+  sound.start();
+  lastInputT = clock.elapsedTime;
+  if (state === 'intro') { begin(); return; }
+  if (state === 'end') { if (clock.elapsedTime - endT > 12) begin(); return; }
+  throttle = true;
+  speed = Math.max(speed, 2.5) + 1.5;        // a tap gives a little nudge forward
+}
+function release() { throttle = false; }
+addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) press(); }
+  if (e.code === 'KeyM') { sound.start(); sound.toggle(); }
+});
+addEventListener('keyup', e => { if (e.code === 'Space') release(); });
+addEventListener('pointerdown', e => { e.preventDefault(); press(); });
+addEventListener('pointerup', release);
+addEventListener('pointercancel', release);
+addEventListener('blur', release);
+addEventListener('contextmenu', e => e.preventDefault());
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; fitFov();
+  renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
+  filmPass.uniforms.uAspect.value = innerWidth / innerHeight;
+  filmPass.uniforms.uRes.value.set(innerWidth, innerHeight);
+});
+
+// =====================================================================
+//  Main loop
+// =====================================================================
+const clock = new THREE.Clock();
+const tmpA = new V3(), tmpB = new V3(), tmpC = new V3(), camTarget = new V3(), lookCur = new V3(), lookWant = new V3();
+const prevCam = new V3();
+let snapCamera = true;
+let wheelAngle = 0;
+
+if (DEBUG_S !== null) { begin(); s = DEBUG_S; startT = -10; storyIdx = STORY.filter(x => x.at <= s).length; }
+
+function frame() {
+  requestAnimationFrame(frame);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
+
+  // --- drive
+  if (state === 'drive') {
+    const thr = throttle || AUTO;
+    speed += (thr ? 5.0 : -3.4) * dt;
+    speed = clamp(speed, 0, MAX_SPEED);
+    s += speed * dt;
+    if (storyIdx < STORY.length && s >= STORY[storyIdx].at) { showCard(STORY[storyIdx].html, 3.4); storyIdx++; }
+    if (s >= END) { s = END; speed = 0; state = 'end'; endT = t; }
+  }
+  const idle = state === 'drive' && speed < 0.2 && t - lastInputT > 5 && t - startT > 3;
+  hintEl.classList.toggle('show', idle || (state === 'drive' && t - startT < 6 && s < 5));
+
+  // --- the car
+  const p = roadPoint(s, tmpA), ahead = roadPoint(s + 2.6, tmpB);
+  CAR.car.position.copy(p);
+  CAR.car.lookAt(ahead);
+  wheelAngle += speed * dt / 0.42;
+  for (const w of CAR.wheels) w.rotation.x = wheelAngle;
+  const shake = 0.012 + speed * 0.0012;
+  CAR.body.position.y = Math.sin(t * 38) * shake + Math.sin(t * 2.3 + s * 0.4) * speed * 0.004;
+  CAR.body.rotation.z = Math.sin(t * 1.7 + s * 0.3) * speed * 0.0015 + Math.sin(t * 31) * 0.003;
+  // acetylene lamps flicker a little
+  const fl = 0.92 + 0.08 * Math.sin(t * 23) * Math.sin(t * 7.1);
+  for (const h of headlights) h.intensity = 260 * fl;
+  beamMat.uniforms.uInt.value = fl;
+
+  // --- camera: rides the road behind the car, gazing toward the castle
+  const endK = state === 'end' ? smooth(0, 5, t - endT) : 0;
+  const back = roadPoint(Math.max(s - 9 - 4 * smooth(760, END, s), -50), tmpC);
+  camTarget.copy(back); camTarget.y += 3.3 + smooth(760, END, s) * 1.2 + endK * 1.5;
+  camTarget.x += Math.sin(t * 0.37) * 0.25; camTarget.y += Math.sin(t * 0.53) * 0.15;
+  camTarget.y = Math.max(camTarget.y, terrainH(camTarget.x, camTarget.z) + 1.6);
+  // aim: blend yaw between the road ahead and the castle, and pick a pitch that
+  // keeps the castle's spires in frame without losing the car at the bottom
+  const nearEnd = smooth(760, END, s);
+  camera.fov = baseFov + 8 * nearEnd; camera.updateProjectionMatrix();
+  const halfV = THREE.MathUtils.degToRad(camera.fov / 2);
+  const fwd = roadPoint(s + 30, tmpB); fwd.y += 3;
+  const fdx = fwd.x - camTarget.x, fdz = fwd.z - camTarget.z;
+  const yawF = Math.atan2(fdx, fdz), pitchF = Math.atan2(fwd.y - camTarget.y, Math.hypot(fdx, fdz));
+  const cdx = CX - camTarget.x, cdz = CZ - camTarget.z, cdist = Math.hypot(cdx, cdz);
+  const yawC = Math.atan2(cdx, cdz);
+  const pitchC = Math.atan2(castleBaseY + castleTopY - camTarget.y, cdist) - halfV * 0.55 * nearEnd;
+  const pitchCar = Math.atan2(p.y - camTarget.y, Math.hypot(p.x - camTarget.x, p.z - camTarget.z)) + halfV * 0.9;
+  const w = 0.3 + 0.35 * nearEnd + 0.15 * endK;
+  let dy = yawC - yawF; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+  const yaw = yawF + dy * w;
+  const pitch = Math.min(lerp(pitchF, pitchC, Math.max(w, 0.5)), pitchCar);
+  lookWant.set(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch)).multiplyScalar(60).add(camTarget);
+  if (snapCamera) { camera.position.copy(camTarget); lookCur.copy(lookWant); prevCam.copy(camTarget); snapCamera = false; }
+  camera.position.lerp(camTarget, 1 - Math.exp(-dt * 3.2));
+  lookCur.lerp(lookWant, 1 - Math.exp(-dt * 2.2));
+  camera.lookAt(lookCur);
+
+  // --- moon light & shadows follow the car
+  moonLight.target.position.copy(p);
+  moonLight.position.copy(p).addScaledVector(MOON_LIGHT_DIR, 420);
+  sky.position.copy(camera.position);
+  skyMat.uniforms.uTime.value = t;
+
+  // --- castle: lighter "fog" so it reads as a silhouette from afar
+  const cd = camera.position.distanceTo(castle.position);
+  const cf = 1 - Math.exp(-Math.pow(cd * 0.00062, 2));
+  for (const m of castleMats) { m.color.copy(m.userData.base).multiplyScalar(1 - cf); m.emissive.copy(FOG_COLOR).multiplyScalar(cf * 1.1); }
+  for (const cw of castleWindows) cw.m.material.opacity = 0.75 + 0.25 * Math.sin(t * 2.1 + cw.ph) * Math.sin(t * 5.3 + cw.ph * 2);
+  for (const b of bats) {
+    const a = b.ph + t * b.sp;
+    b.b.position.set(CX + Math.cos(a) * b.rad, castleBaseY + b.h + Math.sin(t * 0.9 + b.ph) * 6, CZ + Math.sin(a) * b.rad * 0.7);
+    b.b.rotation.y = -a + (b.sp > 0 ? 0 : Math.PI);
+    const f = Math.sin(t * b.fl + b.ph) * 0.9;
+    b.l.rotation.z = f; b.r.rotation.z = -f;
+  }
+
+  // --- fog drifts
+  for (const f of fogPuffs) f.sp.position.x = f.x + Math.sin(t * 0.05 * f.sp0 + f.ph) * 6;
+
+  // --- snow streams past as the car moves
+  const dc = tmpA.copy(camera.position).sub(prevCam); prevCam.copy(camera.position);
+  for (let i = 0; i < SNOW_N; i++) {
+    const k = i * 3;
+    let x = snowPos[k] - dc.x + Math.sin(t * 0.6 + i) * 0.15 * dt + 0.9 * dt;
+    let y = snowPos[k + 1] - dc.y - snowVel[i] * dt;
+    let z = snowPos[k + 2] - dc.z + 0.4 * dt;
+    x = ((x + SB.x / 2) % SB.x + SB.x) % SB.x - SB.x / 2;
+    y = ((y + SB.y / 2) % SB.y + SB.y) % SB.y - SB.y / 2;
+    z = ((z + SB.z / 2) % SB.z + SB.z) % SB.z - SB.z / 2;
+    snowPos[k] = x; snowPos[k + 1] = y; snowPos[k + 2] = z;
+  }
+  snowGeo.attributes.position.needsUpdate = true;
+  snow.position.copy(camera.position);
+
+  // --- iris in / iris out on the castle
+  const U = filmPass.uniforms;
+  U.uTime.value = t;
+  if (state === 'intro') { U.uIris.value = 0; }
+  else if (state === 'drive') { U.uIris.value = 1.6 * smooth(0, 2.8, t - startT); U.uIrisC.value.set(0.5, 0.5); }
+  else {
+    const te = t - endT;
+    const sp = tmpB.copy(castleLook).project(camera);
+    U.uIrisC.value.set(sp.x * 0.5 + 0.5, sp.y * 0.5 + 0.5);
+    U.uIris.value = lerp(1.6, 0.17, smooth(5, 8.5, te)) * (1 - smooth(10, 11.2, te));
+    if (te > 11.2 && !cardEl.classList.contains('show')) {
+      showCard(`<h1>Finis</h1><div class="orn">❦</div><div class="hint">press <b>space</b> or touch<br>to make the journey again</div>`, 0);
+    }
+  }
+
+  sound.update(state === 'drive' ? speed : 0);
+  composer.render();
+}
+frame();
+</script>
+</body>
+</html>
