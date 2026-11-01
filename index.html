@@ -59,6 +59,8 @@
   .corner.br { bottom: 8px; right: 8px; border-left: 0; border-top: 0; }
 
   /* ---------- HUD ---------- */
+  body.trailer #hint, body.trailer #sound { display: none; }
+  body.trailer .card { transition: none; }
   #hint {
     position: fixed; left: 50%; bottom: max(22px, env(safe-area-inset-bottom)); transform: translateX(-50%);
     color: rgba(221,227,236,.75); font-family: "IM Fell English SC", Georgia, serif; font-size: 15px;
@@ -73,6 +75,7 @@
     padding: 6px 10px; cursor: pointer;
   }
 </style>
+<script src="vampire.js"></script>
 <script type="importmap">
 {
   "imports": {
@@ -87,7 +90,7 @@
   <div class="frame">
     <span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
     <div id="cardText">
-      <div class="small">a symphony of night &amp; fog</div>
+      <div class="small">a symphony of night &amp; code</div>
       <h1>Vibeferatu</h1>
       <div class="orn">❦</div>
       <div class="hint">hold <b>space</b> or touch the screen<br>to drive toward the castle</div>
@@ -106,11 +109,15 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { CSM } from 'three/addons/csm/CSM.js';
 
 const V3 = THREE.Vector3;
 const params = new URLSearchParams(location.search);
 const DEBUG_S = params.has('s') ? parseFloat(params.get('s')) : null;
 const AUTO = params.has('auto');
+const trailerOv = { gate: null, ds: null, face: null, push: 0, hideFig: false, zoomTo: null };   // per-shot overrides used by the trailer
+const TRAILER = params.has('trailer');
 const isTouch = matchMedia('(pointer: coarse)').matches;
 
 // =====================================================================
@@ -222,13 +229,23 @@ scene.add(hemi);
 const flashLight = new THREE.DirectionalLight(0xdfe8ff, 0);
 scene.add(flashLight, flashLight.target);
 const FLASH_DIR = new V3(-0.4, 0.8, -1).normalize();
-const moonLight = new THREE.DirectionalLight(0xc4d2ff, 1.9);
-moonLight.castShadow = true;
-moonLight.shadow.mapSize.set(isTouch ? 2048 : 4096, isTouch ? 2048 : 4096);
-Object.assign(moonLight.shadow.camera, { left: -110, right: 110, top: 110, bottom: -110, near: 1, far: 900 });
-moonLight.shadow.bias = -0.0004;
-moonLight.shadow.normalBias = 0.6;
-scene.add(moonLight, moonLight.target);
+// Moonlight with cascaded shadow maps: a very sharp cascade around the camera (the car's
+// shadow) and progressively coarser ones out to the far valley walls.
+const csm = new CSM({
+  camera, parent: scene,
+  cascades: isTouch ? 3 : 4, maxFar: 320, mode: 'practical',
+  shadowMapSize: isTouch ? 2048 : 4096,
+  lightDirection: MOON_LIGHT_DIR.clone().negate(), lightIntensity: 1.9,
+  lightNear: 1, lightFar: 1400, lightMargin: 220,
+});
+csm.fade = true;
+csm.lights.forEach((l, i) => {
+  l.color.set(0xc4d2ff);
+  l.shadow.bias = -0.00015 * (i + 1);
+  l.shadow.normalBias = i === 0 ? 0.02 : 0.15 * i;
+  l.shadow.radius = 2;
+});
+let csmFov = 0, csmAspect = 0;
 
 // =====================================================================
 //  Sky: gradient, drifting clouds, the full moon
@@ -670,7 +687,7 @@ for (const lp of CAR.lamps) {
 // =====================================================================
 //  The apparition — a gaunt figure that waits by the road, and is gone
 // =====================================================================
-function buildFigure() {
+function buildFigure(faceMat = null) {
   const g = new THREE.Group();
   const cloth = new THREE.MeshStandardMaterial({ color: 0x050506, roughness: 1 });
   const skin = new THREE.MeshStandardMaterial({ color: 0x9a9aa2, roughness: 0.85 });
@@ -681,7 +698,7 @@ function buildFigure() {
   const head = add(new THREE.SphereGeometry(0.15, 14, 12), skin, 0, 2.36, 0.2); head.scale.set(0.82, 1.4, 1);
   for (const sx of [-1, 1]) {
     const ear = add(new THREE.ConeGeometry(0.035, 0.2, 5), skin, sx * 0.12, 2.43, 0.17); ear.rotation.z = -sx * 0.9;
-    const eye = add(new THREE.SphereGeometry(0.022, 6, 6), new THREE.MeshBasicMaterial({ color: 0x000000 }), sx * 0.05, 2.38, 0.33);
+    if (!faceMat) add(new THREE.SphereGeometry(0.022, 6, 6), new THREE.MeshBasicMaterial({ color: 0x000000 }), sx * 0.05, 2.38, 0.33);
     // arms reaching forward, with long curled fingers
     const arm = new THREE.Group(); arm.position.set(sx * 0.33, 1.98, 0.08); arm.rotation.set(-1.05, 0, sx * 0.12); g.add(arm);
     const ag = new THREE.CylinderGeometry(0.05, 0.06, 0.85, 6); ag.translate(0, -0.42, 0);
@@ -692,19 +709,586 @@ function buildFigure() {
       fm.rotation.set(-0.5 - f * 0.08, 0, (f - 1.5) * 0.18);
     }
   }
+  if (faceMat) {
+    // a face mask wrapped over the front of the skull
+    const fp = new THREE.Mesh(new THREE.SphereGeometry(0.153, 32, 24, Math.PI / 2 - 1.05, 2.1, 0.32, 1.85), faceMat);
+    head.add(fp);
+  }
   g.scale.setScalar(1.12);
+  g.userData.head = head;
+  return g;
+}
+// The vampire: the reference portrait cut out and rendered as a displaced relief
+// (pseudo-3D: depth-displaced, normal-mapped, lit by the scene), standing on a long coat.
+let vampireMats = null;
+function buildVampire() {
+  const V = window.VAMPIRE;
+  if (!V) return buildFigure(faceMat);
+  if (!vampireMats) {
+    const L = new THREE.TextureLoader();
+    const color = L.load(V.color); color.colorSpace = THREE.SRGBColorSpace; color.anisotropy = 4;
+    const depth = L.load(V.depth), normal = L.load(V.normal);
+    vampireMats = {
+      face: new THREE.MeshStandardMaterial({
+        map: color, normalMap: normal, normalScale: new THREE.Vector2(0.45, 0.45), displacementMap: depth, displacementScale: 0.2,
+        transparent: true, alphaTest: 0.04, roughness: 0.72,
+        emissive: 0xffffff, emissiveMap: color, emissiveIntensity: 0.16,
+      }),
+      depth: new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, map: color, alphaTest: 0.5, displacementMap: depth, displacementScale: 0.2 }),
+      coat: (() => {
+        const f = V.fabric ? L.load(V.fabric) : null;
+        if (f) { f.colorSpace = THREE.SRGBColorSpace; f.wrapS = f.wrapT = THREE.MirroredRepeatWrapping; f.repeat.set(3, 4); }
+        return new THREE.MeshStandardMaterial({ color: 0xffffff, map: f, roughness: 0.92, emissive: 0xffffff, emissiveMap: f, emissiveIntensity: 0.16 });
+      })(),
+    };
+  }
+  const g = new THREE.Group();
+  const PW = 0.74, PH = PW / V.aspect, EYE_Y = 2.0;
+  const top = EYE_Y + V.eyes[1] * PH;
+  const dx = (0.5 - V.eyes[0]) * PW;                          // centre the face over the body
+  const bust = new THREE.Mesh(new THREE.PlaneGeometry(PW, PH, 180, 145), vampireMats.face);
+  bust.position.set(dx, top - PH / 2, 0.16);
+  bust.customDepthMaterial = vampireMats.depth;
+  bust.castShadow = true;
+  g.add(bust);
+  // the long coat continuing the jacket to the ground, with a few folds
+  const prof = [[0, 1.79], [0.3, 1.79], [0.36, 1.75], [0.375, 1.6], [0.37, 1.4], [0.36, 1.1], [0.4, 0.55], [0.47, 0.06], [0.45, 0]]
+    .map(([r, y]) => new THREE.Vector2(r, y)).reverse();
+  const cg = new THREE.LatheGeometry(prof, 36).rotateY(Math.PI);   // seam to the back
+  const cp = cg.attributes.position;
+  for (let i = 0; i < cp.count; i++) {
+    const x = cp.getX(i), z = cp.getZ(i), y = cp.getY(i), a = Math.atan2(z, x);
+    const f = 1 + (0.04 * Math.sin(a * 7 + 1.3) + 0.022 * Math.sin(a * 13)) * Math.max(0, 1.3 - y) / 1.3;
+    cp.setX(i, x * f); cp.setZ(i, z * f);
+  }
+  cg.computeVertexNormals();
+  const coat = new THREE.Mesh(cg, vampireMats.coat);
+  coat.scale.z = 0.42; coat.position.z = -0.07;
+  coat.castShadow = coat.receiveShadow = true;
+  g.add(coat);
+  const head = new THREE.Object3D();
+  head.position.set(dx + (V.nose[0] - 0.5) * PW, top - V.nose[1] * PH, 0.3);
+  g.add(head);
+  g.userData.head = head; g.userData.bust = bust;
+  g.scale.setScalar(1.3);
   return g;
 }
 const apparitions = [230, 525, 830].map((at, i) => {
-  const f = buildFigure();
+  const f = buildVampire();
   const side = i % 2 ? 1 : -1, x = roadXs(at) + side * 3.1, z = -at;
   f.position.set(x, terrainH(x, z) - 0.05, z);
   f.visible = false; scene.add(f);
   return { f, at, seen: false };
 });
-const finalFigure = buildFigure();
-finalFigure.visible = false; scene.add(finalFigure);
 let sputterT = -10;
+
+// =====================================================================
+//  The face of the thing behind the door.
+//  Drop an image named face.jpg / face.png next to index.html (served over http),
+//  or pass ?face=<url>. Without one, a hand-drawn ghoul face is used.
+// =====================================================================
+function drawnFace() {
+  const cv = document.createElement('canvas'); cv.width = 256; cv.height = 320;
+  const g = cv.getContext('2d');
+  g.fillStyle = '#b9b6b0'; g.fillRect(0, 0, 256, 320);
+  const shade = (x, y, rx, ry, a) => { const gr = g.createRadialGradient(x, y, 0, x, y, Math.max(rx, ry)); gr.addColorStop(0, `rgba(20,16,14,${a})`); gr.addColorStop(1, 'rgba(20,16,14,0)'); g.save(); g.translate(x, y); g.scale(rx / Math.max(rx, ry), ry / Math.max(rx, ry)); g.translate(-x, -y); g.fillStyle = gr; g.fillRect(0, 0, 256, 320); g.restore(); };
+  shade(88, 140, 40, 30, 0.85); shade(168, 140, 40, 30, 0.85);       // sunken sockets
+  shade(70, 220, 30, 60, 0.35); shade(186, 220, 30, 60, 0.35);       // hollow cheeks
+  g.strokeStyle = 'rgba(30,25,22,.8)'; g.lineWidth = 6;
+  g.beginPath(); g.moveTo(52, 112); g.quadraticCurveTo(90, 92, 122, 120); g.stroke();
+  g.beginPath(); g.moveTo(204, 112); g.quadraticCurveTo(166, 92, 134, 120); g.stroke();
+  g.fillStyle = '#0b0908';
+  for (const x of [92, 164]) { g.beginPath(); g.ellipse(x, 142, 9, 7, 0, 0, 7); g.fill(); }
+  g.fillStyle = '#fff'; for (const x of [95, 167]) { g.beginPath(); g.arc(x, 140, 2, 0, 7); g.fill(); }
+  g.strokeStyle = 'rgba(40,34,30,.85)'; g.lineWidth = 4;
+  g.beginPath(); g.moveTo(128, 130); g.lineTo(124, 200); g.quadraticCurveTo(128, 214, 140, 206); g.stroke();   // hooked nose
+  g.lineWidth = 3; g.beginPath(); g.moveTo(96, 244); g.quadraticCurveTo(128, 236, 160, 244); g.stroke();
+  g.fillStyle = '#e8e4da';
+  g.beginPath(); g.moveTo(120, 240); g.lineTo(124, 262); g.lineTo(128, 240); g.fill();                  // rat fangs
+  g.beginPath(); g.moveTo(130, 240); g.lineTo(134, 262); g.lineTo(138, 240); g.fill();
+  const tx = new THREE.CanvasTexture(cv); tx.colorSpace = THREE.SRGBColorSpace; return tx;
+}
+function faceMask() {
+  const cv = document.createElement('canvas'); cv.width = cv.height = 256;
+  const g = cv.getContext('2d');
+  g.fillStyle = '#000'; g.fillRect(0, 0, 256, 256);
+  g.save(); g.translate(128, 128); g.scale(1, 1.18);
+  const gr = g.createRadialGradient(0, 0, 60, 0, 0, 108);
+  gr.addColorStop(0, '#fff'); gr.addColorStop(1, '#000');
+  g.fillStyle = gr; g.beginPath(); g.arc(0, 0, 110, 0, 7); g.fill(); g.restore();
+  return new THREE.CanvasTexture(cv);
+}
+const faceMat = new THREE.MeshStandardMaterial({ map: drawnFace(), alphaMap: faceMask(), transparent: true, roughness: 0.8 });
+{
+  const srcs = [params.get('face')];
+  if (location.protocol.startsWith('http')) srcs.push('face.jpg', 'face.png', 'face.jpeg', 'face.webp');
+  const list = srcs.filter(Boolean);
+  const tryFace = i => {
+    if (i >= list.length) return;
+    new THREE.TextureLoader().load(list[i], tex => { tex.colorSpace = THREE.SRGBColorSpace; faceMat.map = tex; faceMat.needsUpdate = true; }, undefined, () => tryFace(i + 1));
+  };
+  tryFace(0);
+}
+
+// =====================================================================
+//  The mansion gate at the end of the road: banded stone piers with urns and
+//  carriage lanterns, an ornate wrought-iron double gate under an iron overthrow,
+//  and railed walls running off into the rocks.   (local +z points toward the castle)
+// =====================================================================
+const GATE = (() => {
+  const g = new THREE.Group();
+  const R = mulberry32(1897);
+  const V2 = THREE.Vector2;
+  const tex = (() => {
+    const cv = document.createElement('canvas'); cv.width = cv.height = 256;
+    const c = cv.getContext('2d'); c.fillStyle = '#8c8c8c'; c.fillRect(0, 0, 256, 256);
+    for (let i = 0; i < 2600; i++) { const v = 90 + R() * 100 | 0; c.fillStyle = `rgba(${v},${v},${v},${0.15 + R() * 0.3})`; c.fillRect(R() * 256, R() * 256, 1 + R() * 4, 1 + R() * 4); }
+    for (let i = 0; i < 12; i++) { const x = R() * 256, y = R() * 256, r = 10 + R() * 40; const gr = c.createRadialGradient(x, y, 0, x, y, r); gr.addColorStop(0, 'rgba(25,28,25,.3)'); gr.addColorStop(1, 'rgba(25,28,25,0)'); c.fillStyle = gr; c.fillRect(0, 0, 256, 256); }
+    const t = new THREE.CanvasTexture(cv); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; return t;
+  })();
+  const stoneM = new THREE.MeshStandardMaterial({ color: 0x6a6d74, map: tex, vertexColors: true, roughness: 0.95 });
+  const ironM = new THREE.MeshStandardMaterial({ color: 0x15151a, roughness: 0.38, metalness: 0.85 });
+  const glassM = new THREE.MeshBasicMaterial({ color: new THREE.Color(5, 3.4, 1.6) });
+  const merged = (list, tinted) => mergeGeometries(list.map(({ geo, c }) => {
+    const gg = geo.index ? geo.toNonIndexed() : geo;
+    for (const k of Object.keys(gg.attributes)) if (!['position', 'normal', 'uv'].includes(k)) gg.deleteAttribute(k);
+    if (tinted) { const n = gg.attributes.position.count, a = new Float32Array(n * 3); for (let i = 0; i < n; i++) a.set([c.r, c.g, c.b], i * 3); gg.setAttribute('color', new THREE.BufferAttribute(a, 3)); }
+    return gg;
+  }));
+  const tint = (lo = 0.7, hi = 1.0) => { const v = lo + R() * (hi - lo); return new THREE.Color(v, v, v * 1.03); };
+  const rb = (w, h, d, x, y, z, r = 0.04) => new RoundedBoxGeometry(w, h, d, 1, r).translate(x, y, z);
+  const stones = [];
+  const S = (geo, c = tint()) => stones.push({ geo, c });
+  const ironParts = [];
+  const I = (geo, list = ironParts) => list.push({ geo });
+  const bar = (x0, y0, x1, y1, t = 0.035, z = 0, list = ironParts) => {   // a straight iron bar between two points (in the x/y plane)
+    const len = Math.hypot(x1 - x0, y1 - y0);
+    I(new THREE.BoxGeometry(t, len, t).rotateZ(-Math.atan2(x1 - x0, y1 - y0)).translate((x0 + x1) / 2, (y0 + y1) / 2, z), list);
+  };
+  const spear = (x, y, list = ironParts, s = 1) => {
+    I(new THREE.SphereGeometry(0.045 * s, 8, 6).translate(x, y, 0), list);
+    I(new THREE.ConeGeometry(0.07 * s, 0.34 * s, 4).rotateY(Math.PI / 4).translate(x, y + 0.2 * s, 0), list);
+  };
+  const scroll = (x, y, r, a0, len, flip = 1, list = ironParts) =>     // a C-scroll of flat iron
+    I(new THREE.TorusGeometry(r, 0.018, 5, 18, len).rotateZ(a0).scale(flip, 1, 1).translate(x, y, 0), list);
+  const urn = (() => {
+    const p = [[0, 0], [0.42, 0], [0.42, 0.12], [0.24, 0.2], [0.17, 0.38], [0.42, 0.6], [0.5, 0.85], [0.42, 1.05], [0.24, 1.13], [0.31, 1.2], [0.1, 1.32], [0.12, 1.42], [0, 1.55]];
+    return new THREE.LatheGeometry(p.map(([r, y]) => new V2(r, y)), 20);
+  })();
+
+  // --- the two great piers
+  const PX = 4.95;
+  const lanterns = [];
+  for (const s of [-1, 1]) {
+    const x = s * PX;
+    S(rb(2.0, 0.8, 2.0, x, 0.0, 0), tint(0.55, 0.7));
+    for (let y = 0.4, k = 0; y < 5.9; k++) {                       // banded rustication
+      const h = k % 2 ? 0.38 : 0.62, w = k % 2 ? 1.5 : 1.66;
+      S(rb(w, h - 0.04, w, x, y + h / 2, 0, 0.05)); y += h;
+    }
+    S(rb(1.95, 0.22, 1.95, x, 6.05, 0), tint(0.6, 0.75));
+    S(rb(1.75, 0.3, 1.75, x, 6.3, 0), tint(0.75, 0.9));
+    S(rb(2.1, 0.2, 2.1, x, 6.55, 0), tint(0.6, 0.75));
+    S(urn.clone().translate(x, 6.65, 0), tint(0.75, 0.9));
+    // carved crest panel on the face toward the road
+    S(rb(0.95, 1.5, 0.12, x, 3.4, -0.86, 0.03), tint(0.45, 0.55));
+    S(new THREE.CylinderGeometry(0.32, 0.32, 0.1, 18).rotateX(Math.PI / 2).translate(x, 3.5, -0.94), tint(0.75, 0.9));
+    // carriage lantern on an iron bracket
+    const lx = x - s * 0.15, ly = 4.75, lz = -1.25;
+    bar(lx, 4.35, lx, 4.35, 0.04);
+    I(new THREE.BoxGeometry(0.06, 0.06, 0.5).translate(lx, 4.4, -1.0));
+    I(new THREE.BoxGeometry(0.06, 0.45, 0.06).translate(lx, 4.2, -0.85));
+    for (const [dx, dz] of [[-0.14, -0.14], [0.14, -0.14], [-0.14, 0.14], [0.14, 0.14]]) I(new THREE.BoxGeometry(0.03, 0.55, 0.03).translate(lx + dx, ly, lz + dz));
+    I(new THREE.ConeGeometry(0.24, 0.3, 4).rotateY(Math.PI / 4).translate(lx, ly + 0.42, lz));
+    I(new THREE.SphereGeometry(0.05, 6, 4).translate(lx, ly + 0.6, lz));
+    I(new THREE.BoxGeometry(0.34, 0.05, 0.34).translate(lx, ly - 0.28, lz));
+    const glass = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.46, 0.24), glassM.clone());
+    glass.position.set(lx, ly, lz); g.add(glass);
+    const light = new THREE.PointLight(0xffb070, 10, 16, 1.6); light.position.set(lx, ly, lz - 0.2); g.add(light);
+    lanterns.push({ glass, light, ph: R() * 9 });
+  }
+
+  // --- the overthrow: a double iron arch over the opening, with spikes and a bat crest
+  {
+    const rise = (r, u) => Math.sin(u * Math.PI);           // half-ellipse
+    const N = 40, W = PX - 0.85;
+    let prevA = null, prevB = null;
+    for (let i = 0; i <= N; i++) {
+      const u = i / N, x = -W + 2 * W * u;
+      const a = new V2(x, 6.35 + 1.75 * rise(0, u)), b = new V2(x, 6.0 + 1.25 * rise(0, u));
+      if (prevA) { bar(prevA.x, prevA.y, a.x, a.y, 0.06); bar(prevB.x, prevB.y, b.x, b.y, 0.05); }
+      if (i % 3 === 0 && i > 0 && i < N) { bar(b.x, b.y, a.x, a.y, 0.03); spear(a.x, a.y + 0.02, ironParts, 0.8); }
+      prevA = a; prevB = b;
+    }
+    bar(-W, 6.0, W, 6.0, 0.06);
+    for (const f of [-1, 1]) for (let k = 0; k < 4; k++) scroll(f * (0.9 + k * 0.85), 6.35, 0.2, f > 0 ? 0 : Math.PI, Math.PI * 1.4, 1);
+    I(new THREE.TorusGeometry(0.42, 0.04, 6, 28).translate(0, 8.35, 0));
+  }
+
+  // bat silhouette (used on the crest and split across the gate leaves)
+  const batHalf = [[0, -0.22], [0.07, -0.1], [0.18, -0.17], [0.3, -0.04], [0.44, -0.13], [0.55, 0.12], [0.34, 0.14], [0.2, 0.08], [0.09, 0.14], [0.07, 0.27], [0.03, 0.17], [0, 0.17]];
+  const batGeo = (side, sc) => {
+    const pts = batHalf.map(([x, y]) => new V2(x * side * sc, y * sc));
+    return new THREE.ExtrudeGeometry(new THREE.Shape(pts), { depth: 0.05, bevelEnabled: false }).translate(0, 0, -0.025);
+  };
+  I(batGeo(1, 0.75).translate(0, 8.35, 0)); I(batGeo(-1, 0.75).translate(0, 8.35, 0));
+
+  // --- the two gate leaves
+  const HW = PX - 0.85;                                        // hinge at the inner face of the pier
+  const leaves = [];
+  for (const sx of [-1, 1]) {
+    const leaf = new THREE.Group(); leaf.position.set(sx * HW, 0, 0); g.add(leaf);
+    const P = [];
+    const X = u => -sx * u * HW;                              // local x from hinge (u=0) to centre (u=1)
+    const top = u => 3.7 + 1.75 * Math.pow(u, 1.7);
+    // stiles and rails
+    bar(X(0.005), 0.15, X(0.005), top(0) + 0.1, 0.09, 0, P);
+    bar(X(0.995), 0.15, X(0.995), top(1) + 0.1, 0.09, 0, P);
+    for (const y of [0.22, 1.25, 3.25]) bar(X(0), y, X(1), y, 0.06, 0, P);
+    for (let i = 0; i < 16; i++) bar(X(i / 16), top(i / 16), X((i + 1) / 16), top((i + 1) / 16), 0.06, 0, P);
+    // pickets with spear tips, dog bars between them
+    const NB = 13;
+    for (let i = 1; i < NB; i++) {
+      const u = i / NB, x = X(u);
+      bar(x, 0.15, x, top(u) + 0.22, 0.032, 0, P); spear(x, top(u) + 0.24, P, 0.85);
+      const um = (i - 0.5) / NB; bar(X(um), 0.22, X(um), 0.62, 0.025, 0, P); spear(X(um), 0.64, P, 0.5);
+    }
+    // rings between pickets in the lower band
+    for (let i = 0; i < NB; i++) I(new THREE.TorusGeometry(0.13, 0.016, 5, 16).translate(X((i + 0.5) / NB), 0.95, 0), P);
+    // C- and S-scrolls in the upper band
+    for (let i = 1; i < NB - 1; i += 2) {
+      const xm = X((i + 0.5) / NB);
+      scroll(xm, 3.55, 0.12, 0, Math.PI * 1.5, 1, P); scroll(xm, 3.55, 0.12, Math.PI, Math.PI * 1.5, -1, P);
+    }
+    // half of the central medallion: a ring with the bat, and a heavy lock box on one leaf
+    I(new THREE.TorusGeometry(0.62, 0.035, 6, 32, Math.PI).rotateZ(sx < 0 ? -Math.PI / 2 : Math.PI / 2).translate(X(1), 2.3, 0), P);
+    I(new THREE.TorusGeometry(0.5, 0.02, 6, 32, Math.PI).rotateZ(sx < 0 ? -Math.PI / 2 : Math.PI / 2).translate(X(1), 2.3, 0), P);
+    I(batGeo(sx < 0 ? -1 : 1, 0.95).translate(X(1), 2.3, 0), P);
+    if (sx > 0) { I(new THREE.BoxGeometry(0.28, 0.4, 0.14).translate(X(1) + 0.17, 1.6, 0), P); I(new THREE.TorusGeometry(0.07, 0.015, 5, 12).translate(X(1) + 0.17, 1.45, -0.09), P); }
+    // hinge knuckles
+    for (const y of [0.5, 2.0, 3.5]) I(new THREE.CylinderGeometry(0.07, 0.07, 0.28, 10).translate(X(0), y, 0), P);
+    const m = new THREE.Mesh(merged(P, false), ironM); m.castShadow = true; leaf.add(m);
+    leaves.push({ leaf, sx });
+  }
+
+  // --- flanking walls with iron railings, running off into the rocks
+  const rail = [];
+  for (const s of [-1, 1]) {
+    for (const [a, b] of [[PX + 1.0, 10.2], [11.4, 17]]) {
+      const cx = s * (a + b) / 2, w = b - a;
+      S(rb(w, 0.5, 1.2, cx, -0.15, 0), tint(0.55, 0.7));
+      for (let y = 0.1, k = 0; y < 1.5; k++) { S(rb(w, 0.42, 0.95, cx, y + 0.21, 0, 0.03), tint(0.65, 0.9)); y += 0.45; }
+      S(rb(w + 0.1, 0.18, 1.15, cx, 1.55, 0), tint(0.6, 0.75));
+      bar(cx - w / 2, 1.85, cx + w / 2, 1.85, 0.05, 0, rail); bar(cx - w / 2, 3.1, cx + w / 2, 3.1, 0.05, 0, rail);
+      for (let x = a + 0.15; x < b; x += 0.28) { const xx = s * x; bar(xx, 1.62, xx, 3.25, 0.028, 0, rail); spear(xx, 3.27, rail, 0.7); }
+    }
+    for (const x of [10.8, 17.5]) {                             // smaller piers with ball finials
+      const xx = s * x;
+      S(rb(1.1, 3.6, 1.1, xx, 1.6, 0), tint(0.65, 0.85));
+      S(rb(1.3, 0.22, 1.3, xx, 3.5, 0), tint(0.6, 0.75));
+      S(new THREE.SphereGeometry(0.35, 14, 10).translate(xx, 3.95, 0), tint(0.75, 0.9));
+    }
+  }
+  const stoneMesh = new THREE.Mesh(merged(stones, true), stoneM); stoneMesh.castShadow = stoneMesh.receiveShadow = true; g.add(stoneMesh);
+  const ironMesh = new THREE.Mesh(merged(ironParts.concat(rail), false), ironM); ironMesh.castShadow = true; g.add(ironMesh);
+
+  const gp = roadPoint(END + 9);
+  const ahead = roadPoint(END + 10); ahead.y = gp.y;
+  g.position.copy(gp).setY(gp.y - 0.1);
+  g.lookAt(ahead);
+  scene.add(g);
+  g.updateMatrixWorld(true);
+
+  // the cut-in shot: low, behind and to one side of the car, framing car and gate together
+  const f = new V3().subVectors(ahead, gp).normalize(), r = new V3(-f.z, 0, f.x);
+  const car = roadPoint(END);
+  const shot = {
+    pos: car.clone().addScaledVector(f, -6.2).addScaledVector(r, 3.3).add(new V3(0, 1.25, 0)),
+    pos2: car.clone().addScaledVector(f, -4.6).addScaledVector(r, 2.7).add(new V3(0, 1.45, 0)),
+    look: gp.clone().addScaledVector(r, 0.6).add(new V3(0, 3.0, 0)),
+  };
+  return {
+    g, leaves, lanterns, shot,
+    set(open) { for (const { leaf, sx } of leaves) leaf.rotation.y = sx * open; },   // swings away from the car
+  };
+})();
+
+// =====================================================================
+//  The great door of the castle: a gothic portal in a gatehouse
+// =====================================================================
+const DOOR = (() => {
+  const g = new THREE.Group();
+  const R = mulberry32(666);
+  const V2 = THREE.Vector2;
+
+  // --- textures
+  const stoneTex = (() => {
+    const cv = document.createElement('canvas'); cv.width = cv.height = 256;
+    const c = cv.getContext('2d'); c.fillStyle = '#8a8a8a'; c.fillRect(0, 0, 256, 256);
+    for (let i = 0; i < 2600; i++) {
+      const v = 90 + R() * 90 | 0; c.fillStyle = `rgba(${v},${v},${v},${0.15 + R() * 0.3})`;
+      c.fillRect(R() * 256, R() * 256, 1 + R() * 4, 1 + R() * 4);
+    }
+    for (let i = 0; i < 14; i++) {
+      const x = R() * 256, y = R() * 256, r = 10 + R() * 40;
+      const gr = c.createRadialGradient(x, y, 0, x, y, r); gr.addColorStop(0, 'rgba(30,30,30,.25)'); gr.addColorStop(1, 'rgba(30,30,30,0)');
+      c.fillStyle = gr; c.fillRect(0, 0, 256, 256);
+    }
+    const tx = new THREE.CanvasTexture(cv); tx.wrapS = tx.wrapT = THREE.RepeatWrapping; tx.colorSpace = THREE.SRGBColorSpace; tx.repeat.set(0.45, 0.45);
+    return tx;
+  })();
+  const woodTex = (() => {
+    const cv = document.createElement('canvas'); cv.width = 64; cv.height = 256;
+    const c = cv.getContext('2d'); c.fillStyle = '#7a6a58'; c.fillRect(0, 0, 64, 256);
+    for (let i = 0; i < 40; i++) {
+      c.strokeStyle = `rgba(30,22,15,${0.15 + R() * 0.35})`; c.lineWidth = 0.5 + R() * 1.5;
+      const x = R() * 64; c.beginPath(); c.moveTo(x, 0);
+      for (let y = 0; y <= 256; y += 16) c.lineTo(x + Math.sin(y * 0.05 + i) * 2, y);
+      c.stroke();
+    }
+    for (let i = 0; i < 3; i++) { c.fillStyle = 'rgba(25,18,12,.6)'; c.beginPath(); c.ellipse(R() * 64, R() * 256, 3, 6, 0, 0, 7); c.fill(); }
+    const tx = new THREE.CanvasTexture(cv); tx.wrapS = tx.wrapT = THREE.RepeatWrapping; tx.colorSpace = THREE.SRGBColorSpace; tx.repeat.set(1.5, 0.35);
+    return tx;
+  })();
+
+  // --- materials
+  const stoneM = new THREE.MeshStandardMaterial({ color: 0x585b63, map: stoneTex, vertexColors: true, roughness: 0.95 });
+  const wallM = new THREE.MeshStandardMaterial({ color: 0x34373e, map: stoneTex, roughness: 1 });
+  const wetM = new THREE.MeshStandardMaterial({ color: 0x40434a, map: stoneTex, vertexColors: true, roughness: 0.28, metalness: 0.2 });
+  const woodM = new THREE.MeshStandardMaterial({ color: 0x5a4430, map: woodTex, vertexColors: true, roughness: 0.85 });
+  const ironM = new THREE.MeshStandardMaterial({ color: 0x141417, roughness: 0.4, metalness: 0.85 });
+  const blackM = new THREE.MeshBasicMaterial({ color: 0x000000 });
+
+  const add = (geo, mat, x = 0, y = 0, z = 0, parent = g) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = m.receiveShadow = true; parent.add(m); return m; };
+  // merge many pieces into one mesh; each piece gets its own tint (vertex colour)
+  function merged(list, tinted = true) {
+    const gs = list.map(({ geo, c }) => {
+      const gg = geo.index ? geo.toNonIndexed() : geo;
+      for (const k of Object.keys(gg.attributes)) if (!['position', 'normal', 'uv'].includes(k)) gg.deleteAttribute(k);
+      if (tinted) {
+        const n = gg.attributes.position.count, a = new Float32Array(n * 3);
+        for (let i = 0; i < n; i++) { a[i * 3] = c.r; a[i * 3 + 1] = c.g; a[i * 3 + 2] = c.b; }
+        gg.setAttribute('color', new THREE.BufferAttribute(a, 3));
+      }
+      return gg;
+    });
+    return mergeGeometries(gs);
+  }
+  const tint = (lo = 0.72, hi = 1.05) => { const v = lo + R() * (hi - lo); return new THREE.Color(v, v * (0.98 + R() * 0.03), v * (1 + R() * 0.05)); };
+  const wtint = () => { const v = 0.7 + R() * 0.45; return new THREE.Color(v, v * 0.95, v * 0.9); };
+  // extruded stone from a 2D outline, pulled in a little so joints show
+  function slab(pts, z0, depth, gap = 0.028, bevel = 0.025) {
+    const c = pts.reduce((a, p) => a.add(p), new V2()).multiplyScalar(1 / pts.length);
+    const shr = pts.map(p => { const d = c.clone().sub(p); const l = d.length(); return p.clone().add(d.multiplyScalar(Math.min(gap / l, 0.4))); });
+    const geo = new THREE.ExtrudeGeometry(new THREE.Shape(shr), { depth, bevelEnabled: bevel > 0, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 1, curveSegments: 1 });
+    geo.translate(0, 0, z0);
+    return geo;
+  }
+  const rbox = (w, h, d, x, y, z, r = 0.035) => new RoundedBoxGeometry(w, h, d, 1, r).translate(x, y, z);
+
+  // --- the pointed arch
+  const H0 = 1.8, STEP = 0.45, HS = 3.8, RF = 1.6, ZW = 5.3;   // inner half-span, ring step, springing height, radius factor, wall back
+  const archPt = (h, u, side = 1) => {
+    const r = RF * h, cx = r - h, ta = Math.acos(-cx / r), th = Math.PI + u * (ta - Math.PI);
+    return new V2((cx + r * Math.cos(th)) * side, HS + r * Math.sin(th));
+  };
+  const archTop = (h, X) => { const r = RF * h, cx = r - h; return HS + Math.sqrt(Math.max(0, r * r - (Math.abs(X) + cx) ** 2)); };
+  const archHalf = (h, y) => {
+    const r = RF * h, cx = r - h, dy = y - HS;
+    if (dy <= 0) return h; if (dy >= Math.sqrt(r * r - cx * cx)) return 0; return Math.sqrt(r * r - dy * dy) - cx;
+  };
+  const H3 = H0 + 3 * STEP;
+
+  const stones = [];
+  const push = (geo, c = tint()) => stones.push({ geo, c });
+
+  // --- the facade wall with the portal cut out of it
+  {
+    const sh = new THREE.Shape();
+    sh.moveTo(-6, 0); sh.lineTo(-H3, 0); sh.lineTo(-H3, HS);
+    for (let i = 1; i <= 16; i++) { const p = archPt(H3, i / 16, 1); sh.lineTo(p.x, p.y); }
+    for (let i = 15; i >= 0; i--) { const p = archPt(H3, i / 16, -1); sh.lineTo(p.x, p.y); }
+    sh.lineTo(H3, 0); sh.lineTo(6, 0); sh.lineTo(6, 12); sh.lineTo(-6, 12); sh.closePath();
+    add(new THREE.ExtrudeGeometry(sh, { depth: 1.2, bevelEnabled: false }).translate(0, 0, ZW), wallM);
+  }
+  // ashlar blocks laid in courses over the facade
+  for (let row = 0, y = 0.5; y < 11.7; row++) {
+    const hgt = 0.5 + (row % 3 === 1 ? 0.12 : 0);
+    let x = -6 - (row % 2 ? 0.55 : 0);
+    while (x < 6) {
+      const w = 0.85 + R() * 0.7;
+      const x0 = Math.max(-6, x), x1 = Math.min(6, x + w);
+      const hw = archHalf(H3, y) + 0.48;
+      if (x1 - x0 > 0.25 && !(x1 > -hw && x0 < hw)) {
+        const d = 0.08 + R() * 0.12;
+        push(rbox(x1 - x0 - 0.05, hgt - 0.05, d, (x0 + x1) / 2, y + hgt / 2, ZW + 1.2 + d / 2 - 0.03, 0.03));
+      }
+      x += w;
+    }
+    y += hgt;
+  }
+  // plinth either side of the doorway
+  for (const s of [-1, 1]) push(rbox(6.3 - H3 - 0.5, 0.5, 0.5, s * (H3 + 0.25 + (6.3 - H3 - 0.5) / 2), 0.25, ZW + 1.35), tint(0.6, 0.8));
+
+  // --- three recessed archivolts, each built from jamb blocks and voussoirs
+  for (let k = 0; k < 3; k++) {
+    const hi = H0 + k * STEP, ho = hi + STEP, depth = 0.4 + k * 0.4;
+    for (const s of [1, -1]) {
+      let y = 0, alt = k;
+      while (y < HS - 0.01) {
+        const y1 = Math.min(HS, y + (alt++ % 2 ? 0.48 : 0.7));
+        push(slab([new V2(-ho * s, y), new V2(-hi * s, y), new V2(-hi * s, y1), new V2(-ho * s, y1)], ZW, depth));
+        y = y1;
+      }
+      const N = 7 + k;
+      for (let i = 0; i < N; i++) {
+        const u0 = i / N, u1 = (i + 1) / N;
+        push(slab([archPt(hi, u0, s), archPt(ho, u0, s), archPt(ho, u1, s), archPt(hi, u1, s)], ZW, depth));
+      }
+    }
+    // slim columns with capitals and bases in the corners between the steps
+    if (k < 2) for (const s of [-1, 1]) {
+      const x = s * (ho + 0.02), z = ZW + depth + 0.13;
+      push(new THREE.CylinderGeometry(0.1, 0.1, HS - 0.5, 10).translate(x, HS / 2, z), tint(0.85, 1.05));
+      push(rbox(0.32, 0.25, 0.32, x, 0.13, z, 0.03), tint(0.7, 0.9));
+      push(new THREE.CylinderGeometry(0.19, 0.1, 0.28, 10).translate(x, HS - 0.12, z), tint(0.7, 0.9));
+    }
+  }
+  // keystone
+  { const a = archPt(H3, 1); push(rbox(0.5, 0.75, 1.4, 0, a.y - 0.15, ZW + 0.72, 0.04), tint(0.8, 1)); }
+  // hood moulding with label stops
+  for (const s of [1, -1]) {
+    for (let i = 0; i < 14; i++) {
+      const u0 = i / 14, u1 = (i + 1) / 14;
+      push(slab([archPt(H3 + 0.05, u0, s), archPt(H3 + 0.42, u0, s), archPt(H3 + 0.42, u1, s), archPt(H3 + 0.05, u1, s)], ZW + 1.2, 0.3, 0.006, 0.03), tint(0.75, 0.85));
+    }
+    push(rbox(0.55, 0.4, 0.45, -s * (H3 + 0.24), HS - 0.2, ZW + 1.4), tint(0.7, 0.85));
+  }
+  // threshold stone
+  push(rbox(2 * H0 + 0.3, 0.14, 1.3, 0, 0.0, ZW + 0.55), tint(0.6, 0.75));
+
+  // buttresses
+  for (const s of [-1, 1]) {
+    const x = s * 5.15;
+    push(rbox(1.25, 7, 1.7, x, 3.5, ZW + 1.2 + 0.85), tint(0.75, 0.9));
+    push(new RoundedBoxGeometry(1.3, 0.3, 2.0, 1, 0.03).rotateX(-0.55).translate(x, 7.25, ZW + 1.2 + 0.7), tint(0.65, 0.8));
+    push(rbox(0.95, 4.3, 1.0, x, 9.3, ZW + 1.2 + 0.5), tint(0.75, 0.9));
+    push(new RoundedBoxGeometry(1.0, 0.25, 1.25, 1, 0.03).rotateX(-0.6).translate(x, 11.5, ZW + 1.2 + 0.4), tint(0.65, 0.8));
+    for (let y = 0.6; y < 7; y += 0.9) push(rbox(1.3, 0.05, 1.75, x, y, ZW + 1.2 + 0.85, 0.01), tint(0.4, 0.5));   // joint lines
+  }
+  // corbels, parapet and merlons along the top
+  for (let x = -5.7; x <= 5.71; x += 0.6) push(new RoundedBoxGeometry(0.28, 0.38, 0.45, 1, 0.03).translate(x, 11.75, ZW + 1.4), tint(0.7, 0.9));
+  push(rbox(12.6, 0.65, 0.9, 0, 12.25, ZW + 1.25), tint(0.75, 0.9));
+  for (let x = -5.6; x <= 5.61; x += 1.6) push(rbox(0.85, 1.05, 0.75, x, 13.1, ZW + 1.25), tint(0.7, 0.95));
+  // lancet window above the portal
+  {
+    const wsh = []; for (let i = 0; i <= 8; i++) wsh.push(archPt(0.42, i / 8, 1)); for (let i = 8; i >= 0; i--) wsh.push(archPt(0.42, i / 8, -1));
+    const pts = [new V2(-0.42, 9.0 - HS + HS), ...wsh.map(p => new V2(p.x, p.y - HS + 10.4)), new V2(0.42, 9.0)];
+    add(new THREE.ExtrudeGeometry(new THREE.Shape(pts), { depth: 0.05, bevelEnabled: false }).translate(0, 0, ZW + 1.21), blackM);
+    push(rbox(1.3, 0.18, 0.4, 0, 8.95, ZW + 1.35), tint(0.7, 0.85));
+  }
+  add(merged(stones), stoneM);
+
+  // gatehouse side walls (close the porch against the curtain wall)
+  for (const s of [-1, 1]) add(new THREE.BoxGeometry(0.8, 12.5, ZW), wallM, s * 5.6, 6.25, ZW / 2);
+  // courtyard and wet flagstones
+  add(new THREE.BoxGeometry(30, 40, 26), wallM, 0, -20.06, 12);
+  {
+    const fl = [];
+    for (let z = ZW + 1.9; z < 21; ) {
+      const d = 0.9 + R() * 0.7; let x = -7 - R() * 0.6;
+      while (x < 7) { const w = 0.9 + R() * 0.9; fl.push({ geo: rbox(w - 0.06, 0.14, d - 0.06, x + w / 2, -0.04, z + d / 2, 0.035), c: tint(0.6, 1.0) }); x += w; }
+      z += d;
+    }
+    add(merged(fl), wetM);
+  }
+  // the darkness inside
+  const dark = add(new THREE.BoxGeometry(2 * H0, 6.7, ZW - 0.1), new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide }), 0, 3.35, (ZW - 0.1) / 2);
+  dark.castShadow = false;
+
+  // --- the doors: planks shaped to the pointed arch, iron straps, studs, knockers
+  const leaves = [];
+  for (const sx of [-1, 1]) {
+    const pivot = new THREE.Group(); pivot.position.set(sx * H0, 0, ZW - 0.1); g.add(pivot);
+    const px = sx * H0;
+    const planks = [], iron = [];
+    for (let i = 0; i < 4; i++) {
+      const X0 = sx < 0 ? -H0 + i * 0.45 : i * 0.45, X1 = X0 + 0.45;
+      const a = X0 + 0.009, b = X1 - 0.009;
+      const pts = [new V2(a - px, 0), new V2(b - px, 0)];
+      for (let j = 0; j <= 6; j++) { const X = b + (a - b) * (j / 6); pts.push(new V2(X - px, archTop(H0, X) - 0.04)); }
+      const dpt = 0.12 + R() * 0.03;
+      const geo = new THREE.ExtrudeGeometry(new THREE.Shape(pts), { depth: dpt, bevelEnabled: true, bevelThickness: 0.008, bevelSize: 0.008, bevelSegments: 1 });
+      geo.translate(0, 0, -dpt / 2);
+      planks.push({ geo, c: wtint() });
+    }
+    const dir = -sx;                       // from the hinge toward the meeting edge
+    for (const y of [0.7, 2.1, 3.45]) {
+      const L = 1.42;
+      iron.push({ geo: new THREE.BoxGeometry(L, 0.11, 0.03).translate(dir * (L / 2 + 0.04), y, 0.09) });
+      iron.push({ geo: new THREE.TorusGeometry(0.085, 0.018, 5, 12, Math.PI * 1.5).rotateZ(dir > 0 ? -0.3 : Math.PI + 0.3).translate(dir * (L + 0.08), y + 0.06, 0.09) });
+      iron.push({ geo: new THREE.TorusGeometry(0.085, 0.018, 5, 12, Math.PI * 1.5).rotateZ(dir > 0 ? Math.PI * 0.5 - 0.3 + Math.PI : -0.3 - Math.PI * 0.5).translate(dir * (L + 0.08), y - 0.06, 0.09) });
+      iron.push({ geo: new THREE.CylinderGeometry(0.05, 0.05, 0.32, 8).translate(0, y, 0) });       // hinge barrel
+      for (let k = 0; k < 6; k++) iron.push({ geo: new THREE.SphereGeometry(0.03, 6, 4).translate(dir * (0.12 + k * 0.25), y, 0.11) });
+    }
+    for (const y of [1.4, 2.8]) for (let k = 0; k < 4; k++) iron.push({ geo: new THREE.SphereGeometry(0.025, 6, 4).translate(dir * (0.225 + k * 0.45), y, 0.09) });
+    // ring knocker near the meeting edge
+    const kx = dir * (H0 - 0.38);
+    iron.push({ geo: new THREE.CylinderGeometry(0.13, 0.13, 0.03, 14).rotateX(Math.PI / 2).translate(kx, 2.75, 0.09) });
+    iron.push({ geo: new THREE.SphereGeometry(0.05, 8, 6).translate(kx, 2.75, 0.12) });
+    iron.push({ geo: new THREE.TorusGeometry(0.15, 0.022, 6, 18).translate(kx, 2.58, 0.13) });
+    if (sx > 0) {   // a barred peephole on one leaf
+      const hx = dir * 0.9;
+      iron.push({ geo: new THREE.BoxGeometry(0.5, 0.06, 0.05).translate(hx, 3.2, 0.1) });
+      iron.push({ geo: new THREE.BoxGeometry(0.5, 0.06, 0.05).translate(hx, 2.74, 0.1) });
+      iron.push({ geo: new THREE.BoxGeometry(0.06, 0.52, 0.05).translate(hx - 0.22, 2.97, 0.1) });
+      iron.push({ geo: new THREE.BoxGeometry(0.06, 0.52, 0.05).translate(hx + 0.22, 2.97, 0.1) });
+      for (const o of [-0.1, 0, 0.1]) iron.push({ geo: new THREE.CylinderGeometry(0.014, 0.014, 0.42, 5).translate(hx + o, 2.97, 0.12) });
+      add(new THREE.PlaneGeometry(0.38, 0.4), blackM, hx, 2.97, 0.087, pivot);
+    }
+    add(merged(planks), woodM, 0, 0, 0, pivot);
+    add(merged(iron, false), ironM, 0, 0, 0, pivot);
+    leaves.push({ pivot, sx });
+  }
+
+  // torches on iron brackets between the portal and the buttresses
+  const torches = [];
+  for (const sx of [-1, 1]) {
+    const x = sx * 4.05, z = ZW + 1.45;
+    add(new THREE.BoxGeometry(0.16, 0.5, 0.06), ironM, x, 4.25, z - 0.05);
+    const arm = add(new THREE.CylinderGeometry(0.025, 0.025, 0.5, 6), ironM, x, 4.35, z + 0.2); arm.rotation.x = Math.PI / 2 - 0.5;
+    add(new THREE.CylinderGeometry(0.15, 0.08, 0.28, 10, 1, true), ironM, x, 4.55, z + 0.42);
+    const flame = add(new THREE.ConeGeometry(0.12, 0.48, 8), new THREE.MeshBasicMaterial({ color: new THREE.Color(9, 5, 1.6) }), x, 4.9, z + 0.42);
+    flame.castShadow = false;
+    const light = new THREE.PointLight(0xff9a48, 30, 22, 1.5);
+    light.position.set(x, 5.2, z + 0.7); g.add(light);
+    torches.push({ flame, light, ph: R() * 10 });
+  }
+
+  // pale moonlight washing down the facade (raking, to pick out the stonework)
+  const wash = new THREE.SpotLight(0xb8c8ff, 70, 45, 0.55, 0.7, 1.2);
+  wash.position.set(-9, 18, 22); wash.target.position.set(0, 4, ZW + 1);
+  g.add(wash, wash.target);
+  // a cold key light from above the doorway, so the face is caught as it steps out
+  const key = new THREE.SpotLight(0xc8d6ff, 55, 26, 0.32, 0.9, 1.4);
+  key.position.set(0.6, 8.5, 13.5); key.target.position.set(0, 2.4, 8.2);
+  g.add(key, key.target);
+  // the figure
+  const fig = buildVampire();
+  fig.visible = false; g.add(fig);
+  g.position.set(-2, 0, 25.15);
+  castle.add(g);
+  castle.updateMatrixWorld(true);
+  const W = v => g.localToWorld(v);
+  return {
+    g, leaves, torches, fig, W, key,
+    set(open) { for (const { pivot, sx } of leaves) pivot.rotation.y = -sx * open; },
+    lookFar: W(new V3(0, 6, 6.5)),
+    base: W(new V3(0, 0, 6.5)),
+  };
+})();
+const endFx = { squeak: false, creak: false, sting: false, thunder: false, tension: false, unveil: false };
+let UNVEIL = 25.5;   // seconds into the ending when the face is fully revealed
 
 // =====================================================================
 //  Ground fog (billboards), rain and lightning
@@ -927,11 +1511,13 @@ composer.addPass(filmPass);
 // =====================================================================
 const sound = {
   ctx: null, on: true,
-  start() {
+  start(offlineCtx = null) {
     if (this.ctx) { this.ctx.resume(); return; }
-    const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
-    const ctx = this.ctx = new AC();
-    const master = this.master = ctx.createGain(); master.gain.value = this.on ? 0.9 : 0; master.connect(ctx.destination);
+    const AC = window.AudioContext || window.webkitAudioContext; if (!AC && !offlineCtx) return;
+    const ctx = this.ctx = offlineCtx || new AC();
+    const master = this.master = ctx.createGain(); master.gain.value = this.on ? 0.9 : 0;
+    const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -10; comp.ratio.value = 6; comp.attack.value = 0.003; comp.release.value = 0.25;
+    master.connect(comp).connect(ctx.destination);
     const buf = ctx.createBuffer(1, ctx.sampleRate * 3, ctx.sampleRate);
     const data = buf.getChannelData(0); for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
     // wind
@@ -961,7 +1547,7 @@ const sound = {
     Object.assign(this, { eng, putt, eg, elp });
     // organ drone, cycling through a few gloomy chords
     const olp = ctx.createBiquadFilter(); olp.type = 'lowpass'; olp.frequency.value = 650;
-    const og = ctx.createGain(); og.gain.value = 0.0; og.gain.setTargetAtTime(0.05, ctx.currentTime, 3);
+    const og = this.og = ctx.createGain(); og.gain.value = 0.0; og.gain.setTargetAtTime(0.05, ctx.currentTime, 3);
     const trem = ctx.createOscillator(); trem.frequency.value = 4.6; const tremG = ctx.createGain(); tremG.gain.value = 0.008;
     trem.connect(tremG).connect(og.gain); trem.start();
     // a long, dark echo for the organ and the howls
@@ -980,7 +1566,7 @@ const sound = {
       return [o, o2];
     });
     let ci = 0;
-    setInterval(() => {
+    if (!offlineCtx) setInterval(() => {
       ci = (ci + 1) % chords.length;
       voices.forEach(([o, o2], k) => {
         o.frequency.setTargetAtTime(chords[ci][k], ctx.currentTime, 0.4);
@@ -1008,6 +1594,131 @@ const sound = {
     const rollG = ctx.createGain(); rollG.gain.value = 0.35 * power; roll.connect(rollG).connect(rg.gain);
     r.connect(rf).connect(rf2).connect(rg).connect(this.master); rg.connect(this.echo);
     r.start(t0); roll.start(t0); r.stop(t0 + 7.2); roll.stop(t0 + 7.2);
+  },
+  // rising string cluster with tremolo and an accelerating timpani roll, cut off by the hit
+  tension(dur) {
+    if (!this.ctx) return;
+    const ctx = this.ctx, t0 = ctx.currentTime;
+    const out = ctx.createGain(); out.gain.setValueAtTime(0.0001, t0);
+    out.gain.exponentialRampToValueAtTime(0.11, t0 + dur); out.gain.linearRampToValueAtTime(0, t0 + dur + 0.04);
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.setValueAtTime(350, t0); lp.frequency.exponentialRampToValueAtTime(3200, t0 + dur);
+    const tg = ctx.createGain(); tg.gain.value = 0.6;
+    const trem = ctx.createOscillator(); trem.frequency.setValueAtTime(6, t0); trem.frequency.linearRampToValueAtTime(13, t0 + dur);
+    const tdepth = ctx.createGain(); tdepth.gain.value = 0.4; trem.connect(tdepth).connect(tg.gain);
+    for (const f of [110, 116.54, 123.47, 155.56, 164.81, 220, 233.08, 311.13]) {
+      for (const dt of [-4, 5]) {
+        const o = ctx.createOscillator(); o.type = 'sawtooth'; o.detune.value = dt;
+        o.frequency.setValueAtTime(f, t0); o.frequency.exponentialRampToValueAtTime(f * 1.12, t0 + dur);
+        o.connect(lp); o.start(t0); o.stop(t0 + dur + 0.1);
+      }
+    }
+    lp.connect(tg).connect(out); out.connect(this.master); out.connect(this.echo);
+    trem.start(t0); trem.stop(t0 + dur + 0.1);
+    for (let tt = 0, gap = 0.5, i = 0; tt < dur - 0.05; i++) { this.thump(t0 + tt, 52, 0.05 + 0.13 * (tt / dur)); tt += gap; gap = Math.max(0.07, gap * 0.86); }
+  },
+  thump(at, f, g) {
+    const ctx = this.ctx;
+    const o = ctx.createOscillator(); o.frequency.setValueAtTime(f * 1.7, at); o.frequency.exponentialRampToValueAtTime(f, at + 0.12);
+    const e = ctx.createGain(); e.gain.setValueAtTime(g, at); e.gain.exponentialRampToValueAtTime(0.0005, at + 0.45);
+    o.connect(e).connect(this.master); o.start(at); o.stop(at + 0.5);
+  },
+  // the orchestral hit as the face is revealed
+  unveil() {
+    if (!this.ctx) return;
+    const ctx = this.ctx, t0 = ctx.currentTime;
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.setValueAtTime(5000, t0); lp.frequency.exponentialRampToValueAtTime(500, t0 + 5);
+    const env = ctx.createGain(); env.gain.setValueAtTime(0, t0); env.gain.linearRampToValueAtTime(0.16, t0 + 0.025);
+    env.gain.exponentialRampToValueAtTime(0.07, t0 + 1.4); env.gain.exponentialRampToValueAtTime(0.0005, t0 + 8);
+    lp.connect(env); env.connect(this.master); env.connect(this.echo);
+    for (const f of [36.71, 73.42, 110, 146.83, 174.61, 207.65, 293.66, 349.23, 415.3]) {    // D minor with a tritone
+      for (const dt of [-7, 0, 6]) {
+        const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f; o.detune.value = dt;
+        o.connect(lp); o.start(t0); o.stop(t0 + 8.2);
+      }
+    }
+    // timpani boom
+    const tb = ctx.createOscillator(); tb.frequency.setValueAtTime(95, t0); tb.frequency.exponentialRampToValueAtTime(42, t0 + 0.6);
+    const tbg = ctx.createGain(); tbg.gain.setValueAtTime(0.75, t0); tbg.gain.exponentialRampToValueAtTime(0.0005, t0 + 3);
+    tb.connect(tbg).connect(this.master); tb.start(t0); tb.stop(t0 + 3.1);
+    // cymbal crash
+    const n = ctx.createBufferSource(); n.buffer = this.noiseBuf;
+    const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 4500;
+    const ng = ctx.createGain(); ng.gain.setValueAtTime(0.12, t0); ng.gain.exponentialRampToValueAtTime(0.0005, t0 + 3.2);
+    n.connect(hp).connect(ng); ng.connect(this.master); ng.connect(this.echo); n.start(t0); n.stop(t0 + 3.3);
+    // the organ swells underneath
+    this.og.gain.cancelScheduledValues(t0); this.og.gain.setTargetAtTime(0.14, t0, 0.08); this.og.gain.setTargetAtTime(0.05, t0 + 4, 2);
+  },
+  // the trailer's score: dark ambience — no melody, only slowly evolving texture that
+  // tightens toward the castle and closes on one deep "braam" under the title
+  theme() {
+    const ctx = this.ctx, END_T = 15.2, HIT = 11.5;
+    const mf = m => 440 * Math.pow(2, (m - 69) / 12);
+    // a huge dark space
+    const ir = ctx.createBuffer(2, ctx.sampleRate * 6, ctx.sampleRate);
+    for (let c = 0; c < 2; c++) { const d = ir.getChannelData(c); for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 2.6); }
+    const verb = ctx.createConvolver(); verb.buffer = ir;
+    const vlp = ctx.createBiquadFilter(); vlp.type = 'lowpass'; vlp.frequency.value = 2200;
+    const wet = ctx.createGain(); wet.gain.value = 0.7; verb.connect(vlp).connect(wet).connect(this.master);
+    const out = ctx.createGain(); out.connect(this.master); out.connect(verb);
+    const noise = () => { const n = ctx.createBufferSource(); n.buffer = this.noiseBuf; n.loop = true; n.loopStart = Math.random(); return n; };
+    // everything in the bed ducks away right after the hit so the braam can ring alone
+    const bed = ctx.createGain(); bed.connect(out);
+    bed.gain.setValueAtTime(0, 0); bed.gain.linearRampToValueAtTime(1, 2.5);
+    bed.gain.setValueAtTime(1, HIT - 0.05); bed.gain.linearRampToValueAtTime(0.12, HIT + 0.15); bed.gain.linearRampToValueAtTime(0, END_T);
+
+    // 1. low rumbling air
+    { const n = noise(), lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 160; lp.Q.value = 0.5;
+      const lfo = ctx.createOscillator(); lfo.frequency.value = 0.09; const lg = ctx.createGain(); lg.gain.value = 70; lfo.connect(lg).connect(lp.frequency);
+      const g = ctx.createGain(); g.gain.value = 0.35; n.connect(lp).connect(g).connect(bed); n.start(0); lfo.start(0); n.stop(END_T); lfo.stop(END_T); }
+    // 2. a moaning resonant wind, sweeping slowly
+    for (const [f0, ph, lv] of [[420, 0, 0.05], [610, 2, 0.035]]) {
+      const n = noise(), bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 9; bp.frequency.value = f0;
+      const lfo = ctx.createOscillator(); lfo.frequency.value = 0.13 + ph * 0.02; const lg = ctx.createGain(); lg.gain.value = f0 * 0.45; lfo.connect(lg).connect(bp.frequency);
+      const g = ctx.createGain(); g.gain.setValueAtTime(lv * 0.4, 0); g.gain.linearRampToValueAtTime(lv, 9); 
+      const pan = ctx.createStereoPanner(); pan.pan.value = ph ? 0.6 : -0.5;
+      n.connect(bp).connect(g).connect(pan).connect(bed); n.start(0); lfo.start(0, ph); n.stop(END_T); lfo.stop(END_T);
+    }
+    // 3. the drone: detuned saws on D, opening and sagging slowly as we near the castle
+    { const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 1.2;
+      lp.frequency.setValueAtTime(110, 0); lp.frequency.exponentialRampToValueAtTime(420, HIT - 0.2);
+      const g = ctx.createGain(); g.gain.setValueAtTime(0, 0); g.gain.linearRampToValueAtTime(0.05, 4); g.gain.linearRampToValueAtTime(0.075, HIT - 0.3);
+      lp.connect(g).connect(bed);
+      for (const [m, det] of [[26, -9], [26, 8], [38, -4], [38, 5], [45, 0], [39, 0]]) {        // the Eb against D: quiet dread
+        const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = mf(m); o.detune.setValueAtTime(det, 0);
+        o.detune.linearRampToValueAtTime(det - 35, HIT);                                          // the whole thing sags flat
+        const og = ctx.createGain(); og.gain.value = m === 39 ? 0.25 : m === 45 ? 0.5 : 1;
+        o.connect(og).connect(lp); o.start(0); o.stop(HIT + 0.3);
+      } }
+    // 4. bowed metal scrapes, far away
+    for (const [at, d, freqs, pan] of [[3.0, 2.4, [930, 1380, 2210], -0.7], [6.8, 2.8, [760, 1190, 1870], 0.7], [9.3, 2.0, [1040, 1610], -0.2]]) {
+      const n = noise(), p = ctx.createStereoPanner(); p.pan.value = pan;
+      const g = ctx.createGain(); g.gain.setValueAtTime(0, at); g.gain.linearRampToValueAtTime(0.07, at + d * 0.6); g.gain.linearRampToValueAtTime(0, at + d);
+      for (const f of freqs) { const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 40; bp.frequency.setValueAtTime(f, at); bp.frequency.linearRampToValueAtTime(f * 0.97, at + d); n.connect(bp).connect(g); }
+      g.connect(p).connect(verb); n.start(at); n.stop(at + d + 0.1);
+    }
+    // 5. a low pulse, felt more than heard, as the camera rises
+    for (const at of [8.4, 9.6, 10.6]) this.thump(at, 40, 0.1);
+    // 6. the reverse swell into the title
+    { const n = noise(), bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 0.6;
+      bp.frequency.setValueAtTime(200, 9.0); bp.frequency.exponentialRampToValueAtTime(2800, HIT);
+      const g = ctx.createGain(); g.gain.setValueAtTime(0.0001, 9.0); g.gain.exponentialRampToValueAtTime(0.06, HIT - 0.03); g.gain.linearRampToValueAtTime(0, HIT);
+      n.connect(bp).connect(g).connect(out); n.start(9.0); n.stop(HIT + 0.05); }
+    // 7. the braam: a deep brassy swell on D with a sub drop, opening then closing, ringing into the dark
+    { const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 2;
+      lp.frequency.setValueAtTime(140, HIT); lp.frequency.linearRampToValueAtTime(900, HIT + 0.35); lp.frequency.exponentialRampToValueAtTime(120, HIT + 3.6);
+      const g = ctx.createGain(); g.gain.setValueAtTime(0, HIT); g.gain.linearRampToValueAtTime(0.13, HIT + 0.08); g.gain.exponentialRampToValueAtTime(0.0004, HIT + 3.6);
+      lp.connect(g).connect(out);
+      for (const [m, det] of [[26, -6], [26, 6], [38, -3], [38, 4], [45, 0], [50, -5]]) {
+        const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = mf(m); o.detune.value = det;
+        o.connect(lp); o.start(HIT); o.stop(HIT + 3.8);
+      }
+      const sub = ctx.createOscillator(); sub.frequency.setValueAtTime(58, HIT); sub.frequency.exponentialRampToValueAtTime(30, HIT + 1.6);
+      const sg = ctx.createGain(); sg.gain.setValueAtTime(0.5, HIT); sg.gain.exponentialRampToValueAtTime(0.0004, HIT + 2.6);
+      sub.connect(sg).connect(this.master); sub.start(HIT); sub.stop(HIT + 2.7);
+      // a last cold breath of air after it, dying into silence
+      const n = noise(), hp = ctx.createBiquadFilter(); hp.type = 'bandpass'; hp.frequency.value = 900; hp.Q.value = 0.8;
+      const ng = ctx.createGain(); ng.gain.setValueAtTime(0, HIT + 1.2); ng.gain.linearRampToValueAtTime(0.025, HIT + 2.2); ng.gain.linearRampToValueAtTime(0, END_T);
+      n.connect(hp).connect(ng).connect(verb); n.start(HIT + 1.2); n.stop(END_T); }
   },
   howl() {
     const ctx = this.ctx, t0 = ctx.currentTime;
@@ -1044,13 +1755,85 @@ const sound = {
     const ng = ctx.createGain(); ng.gain.setValueAtTime(0.05, t0); ng.gain.exponentialRampToValueAtTime(0.0005, t0 + 0.8);
     n.connect(nb).connect(ng).connect(this.master); n.start(t0); n.stop(t0 + 1);
   },
-  update(spd) {
+  gateSqueal(total, clank = true) {
+    // rusty hinges: a run of high, wavering squeals over a low iron groan, then the leaves hit their stops
+    if (!this.ctx) return;
+    const ctx = this.ctx, t0 = ctx.currentTime + 0.05;
+    let t = 0;
+    while (t < total - 0.8) {
+      const d = 0.7 + Math.random() * 1.5;
+      this.squeal(t0 + t, Math.min(d, total - t), 520 + Math.random() * 900);
+      t += d + 0.15 + Math.random() * 0.6;
+    }
+    this.creak(total, 70, 0.045);
+    if (clank) this.clank(t0 + total);
+  },
+  squeal(start, d, f0) {
+    const ctx = this.ctx, N = 48, pc = new Float32Array(N), rc = new Float32Array(N);
+    let f = f0 * (0.8 + Math.random() * 0.3), r = 30;
+    const glide = (Math.random() < 0.5 ? 1 : -1) * f0 * 0.4;
+    for (let i = 0; i < N; i++) {
+      f = THREE.MathUtils.clamp(f + (Math.random() - 0.5) * f0 * 0.07 + glide / N, f0 * 0.5, f0 * 1.9); pc[i] = f;
+      r = THREE.MathUtils.clamp(r + (Math.random() - 0.5) * 14, 14, 70); rc[i] = r;
+    }
+    const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.setValueCurveAtTime(pc, start, d);
+    const am = ctx.createGain(); am.gain.value = 0.55;
+    const lfo = ctx.createOscillator(); lfo.type = 'square'; lfo.frequency.setValueCurveAtTime(rc, start, d);
+    const lg = ctx.createGain(); lg.gain.value = 0.45; lfo.connect(lg).connect(am.gain);
+    const env = ctx.createGain(); env.gain.setValueAtTime(0, start);
+    env.gain.linearRampToValueAtTime(0.05, start + d * 0.15);
+    env.gain.linearRampToValueAtTime(0.03 + Math.random() * 0.03, start + d * 0.6);
+    env.gain.linearRampToValueAtTime(0, start + d);
+    o.connect(am);
+    for (const [m, q, gn] of [[1, 18, 1], [2.71, 22, 0.6], [4.13, 25, 0.35]]) {     // metallic resonances
+      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f0 * m; bp.Q.value = q;
+      const bg = ctx.createGain(); bg.gain.value = gn * 3; am.connect(bp).connect(bg).connect(env);
+    }
+    env.connect(this.master); env.connect(this.echo);
+    o.start(start); lfo.start(start); o.stop(start + d + 0.05); lfo.stop(start + d + 0.05);
+  },
+  clank(at) {
+    const ctx = this.ctx;
+    const n = ctx.createBufferSource(); n.buffer = this.noiseBuf;
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1500; bp.Q.value = 1.5;
+    const ng = ctx.createGain(); ng.gain.setValueAtTime(0.35, at); ng.gain.exponentialRampToValueAtTime(0.001, at + 0.25);
+    n.connect(bp).connect(ng); ng.connect(this.master); ng.connect(this.echo); n.start(at, Math.random()); n.stop(at + 0.3);
+    for (const [f, a] of [[173, 0.08], [447, 0.05], [1033, 0.035], [1760, 0.02]]) {
+      const o = ctx.createOscillator(); o.frequency.value = f;
+      const g = ctx.createGain(); g.gain.setValueAtTime(a, at); g.gain.exponentialRampToValueAtTime(0.0005, at + 2.2);
+      o.connect(g); g.connect(this.master); g.connect(this.echo); o.start(at); o.stop(at + 2.3);
+    }
+  },
+  creak(dur, f0, vol) {
+    // stick-slip groan of old iron / old wood: a wandering pitch chopped into rough pulses
+    if (!this.ctx) return;
+    const ctx = this.ctx, t0 = ctx.currentTime, N = 96;
+    const pc = new Float32Array(N), rc = new Float32Array(N);
+    let f = f0, r = 22;
+    for (let i = 0; i < N; i++) {
+      f = THREE.MathUtils.clamp(f + (Math.random() - 0.5) * f0 * 0.12, f0 * 0.6, f0 * 1.7); pc[i] = f;
+      r = THREE.MathUtils.clamp(r + (Math.random() - 0.5) * 9, 9, 48); rc[i] = r;
+    }
+    const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.setValueCurveAtTime(pc, t0, dur);
+    const o2 = ctx.createOscillator(); o2.type = 'square'; o2.frequency.setValueCurveAtTime(pc.map(x => x * 1.51), t0, dur);
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f0 * 2.2; bp.Q.value = 2.5;
+    const am = ctx.createGain(); am.gain.value = 0.5;
+    const lfo = ctx.createOscillator(); lfo.type = 'square'; lfo.frequency.setValueCurveAtTime(rc, t0, dur);
+    const lg = ctx.createGain(); lg.gain.value = 0.5; lfo.connect(lg).connect(am.gain);
+    const env = ctx.createGain(); env.gain.setValueAtTime(0, t0);
+    for (let k = 0; k <= 8; k++) env.gain.linearRampToValueAtTime(vol * (k === 0 || k === 8 ? 0 : 0.4 + Math.random() * 0.6), t0 + dur * k / 8);
+    const o2g = ctx.createGain(); o2g.gain.value = 0.35;
+    o.connect(bp); o2.connect(o2g).connect(bp); bp.connect(am).connect(env);
+    env.connect(this.master); env.connect(this.echo);
+    for (const n of [o, o2, lfo]) { n.start(t0); n.stop(t0 + dur + 0.1); }
+  },
+  update(spd, mute = false) {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
     this.eng.frequency.setTargetAtTime(32 + spd * 3.2, t, 0.15);
     this.putt.frequency.setTargetAtTime(5 + spd * 1.3, t, 0.15);
     this.elp.frequency.setTargetAtTime(240 + spd * 25, t, 0.2);
-    this.eg.gain.setTargetAtTime(0.05 + spd * 0.012, t, 0.2);
+    this.eg.gain.setTargetAtTime(mute ? 0 : 0.05 + spd * 0.012, t, mute ? 0.05 : 0.2);
   },
   toggle() {
     this.on = !this.on;
@@ -1087,7 +1870,8 @@ let nextHowl = 8;
 function begin() {
   state = 'drive'; startT = clock.elapsedTime; s = 0; speed = 0; storyIdx = 0;
   for (const a of apparitions) { a.seen = false; a.f.visible = false; }
-  finalFigure.visible = false;
+  GATE.set(0); DOOR.set(0); DOOR.fig.visible = false;
+  for (const k in endFx) endFx[k] = false;
   cardEl.classList.remove('show');
   snapCamera = true;
 }
@@ -1095,7 +1879,7 @@ function press() {
   sound.start();
   lastInputT = clock.elapsedTime;
   if (state === 'intro') { begin(); return; }
-  if (state === 'end') { if (clock.elapsedTime - endT > 12) begin(); return; }
+  if (state === 'end') { if (clock.elapsedTime - endT > 36) begin(); return; }
   throttle = true;
   speed = Math.max(speed, 2.5) + 1.5;        // a tap gives a little nudge forward
 }
@@ -1128,21 +1912,26 @@ let snapCamera = true;
 let wheelAngle = 0;
 
 if (DEBUG_S !== null) { begin(); s = DEBUG_S; startT = -10; storyIdx = STORY.filter(x => x.at <= s).length; }
+if (params.has('te')) { begin(); s = END; startT = -30; storyIdx = STORY.length; state = 'end'; endT = -parseFloat(params.get('te')); }
 
 function frame() {
-  requestAnimationFrame(frame);
-  const dt = Math.min(clock.getDelta(), 0.05);
-  const t = clock.elapsedTime;
+  if (!TRAILER) requestAnimationFrame(frame);
+  const dt = TRAILER ? 1 / 30 : Math.min(clock.getDelta(), 0.05);
+  const t = TRAILER ? trailerT : clock.elapsedTime;
+  if (TRAILER) trailerSetup(t);
 
   // --- drive
   if (state === 'drive') {
     const thr = throttle || AUTO;
-    speed += (thr ? 5.0 : -3.4) * dt;
+    if (!TRAILER) speed += (thr ? 5.0 : -3.4) * dt;
     speed = clamp(speed, 0, MAX_SPEED);
     s += speed * dt;
     if (storyIdx < STORY.length && s >= STORY[storyIdx].at) { showCard(STORY[storyIdx].html, 3.4); storyIdx++; }
     if (s >= END) { s = END; speed = 0; state = 'end'; endT = t; }
   }
+  if (params.has('hold') && state === 'end') endT = t - parseFloat(params.get('te'));
+  const te = state === 'end' ? t - endT : 0;
+  const doorShot = state === 'end' && te >= 13.2;
   const idle = state === 'drive' && speed < 0.2 && t - lastInputT > 5 && t - startT > 3;
   hintEl.classList.toggle('show', idle || (state === 'drive' && t - startT < 6 && s < 5));
 
@@ -1163,7 +1952,7 @@ function frame() {
   CAR.lensMat.color.setRGB(6 * fl, 5.2 * fl, 3.6 * fl);
   const FU = fogPass.uniforms;
   FU.uTime.value = t; FU.uLamp.value = fl;
-  FU.uGround.value = p.y - 0.5;
+  FU.uGround.value = doorShot ? DOOR.base.y - 0.3 : p.y - 0.5;
   for (let k = 0; k < 2; k++) {
     headlights[k].getWorldPosition(FU.uLampP.value[k]);
     headlights[k].target.getWorldPosition(FU.uLampD.value[k]);
@@ -1177,22 +1966,65 @@ function frame() {
     if (!a.seen && a.f.visible && dz <= 26) { a.seen = true; a.f.visible = false; sputterT = t; sound.stinger(); }
     if (a.f.visible) a.f.rotation.y = Math.atan2(camera.position.x - a.f.position.x, camera.position.z - a.f.position.z);
   }
+  // --- the ending: the gate swings open, then the castle door
   if (state === 'end') {
-    const te = t - endT;
-    if (te > 2.6 && !finalFigure.visible && te < 3) {
-      roadPoint(END + 16, finalFigure.position);
-      finalFigure.visible = true; sputterT = t; sound.stinger(true);
+    if (te > 1.6 && !endFx.squeak) { endFx.squeak = true; sound.gateSqueal(8.9); }
+    GATE.set(1.5 * (trailerOv.gate ?? smooth(1.6, 10.5, te)));
+    if (te > 15.5 && !endFx.creak) { endFx.creak = true; sound.creak(6.5, 120, 0.09); }
+    DOOR.set(1.4 * smooth(15.5, 22.5, te));
+    DOOR.fig.visible = doorShot && !trailerOv.hideFig;
+    if (!doorShot && vampireMats) { vampireMats.face.color.setScalar(1); vampireMats.face.emissiveIntensity = 0.16; vampireMats.face.normalScale.setScalar(0.45); vampireMats.coat.color.setScalar(0.45); vampireMats.coat.emissiveIntensity = 0.06; }
+    if (doorShot) {
+      // a slow, steady advance that eases to a stop just past the threshold
+      const lin = clamp((te - 17.5) / 13, 0, 1);
+      const wk = 1 - (1 - lin) * (1 - lin);
+      const fz = lerp(0.2, 7.5, wk);
+      const step = (te - 17.5) * 1.5;
+      // it stays a black shape until the torchlight finds it; the face comes last
+      if (vampireMats) {
+        const k = trailerOv.face ?? smooth(2.5, 7.0, fz);
+        // once in the light the face carries its own even, studio-like light;
+        // the scene's torches only tint it a little
+        vampireMats.face.color.setScalar(lerp(0.015, 0.3, k * k));
+        const hit = te > UNVEIL ? Math.exp(-(te - UNVEIL) * 1.6) : 0;
+        vampireMats.face.emissiveIntensity = 0.82 * k * k * k * (1 + 0.3 * hit + 0.08 * flash);
+        vampireMats.face.normalScale.setScalar(lerp(0.45, 0.2, k));
+        if (trailerOv.face === 0) { vampireMats.face.color.setScalar(0); vampireMats.coat.color.setScalar(0); vampireMats.coat.emissiveIntensity = 0; }   // pure silhouette
+        vampireMats.coat.color.setScalar(lerp(0.02, 0.45, k));
+        vampireMats.coat.emissiveIntensity = 0.06 * k * k;
+      }
+      DOOR.fig.position.set(Math.sin(step * 0.5) * 0.04, Math.abs(Math.sin(step)) * 0.035 * (wk > 0 && wk < 1 ? 1 : 0), fz);
+      DOOR.fig.rotation.z = Math.sin(step * 0.5) * 0.02;
+      const bust = DOOR.fig.userData.bust;
+      if (bust) { bust.rotation.z = Math.sin(t * 0.45) * 0.035; bust.position.y = bust.userData.y0 ??= bust.position.y; bust.position.y += Math.sin(t * 1.4) * 0.006; }
+      if (te > UNVEIL - 5.5 && !endFx.tension) { endFx.tension = true; sound.tension(5.5); nextStrike = t + 20; }
+      if (te > UNVEIL && !endFx.unveil) {
+        endFx.unveil = true;
+        // lightning right on top of us: three hard flashes, a deafening crack, the orchestra hits
+        flashes.push({ t, a: 1.7 }, { t: t + 0.11, a: 0.9 }, { t: t + 0.3, a: 1.4 }, { t: t + 1.1, a: 0.6 });
+        nextStrike = t + 14;
+        sound.thunder(1.45); sound.unveil();
+      }
+      if (te > 17 && !endFx.thunder) { endFx.thunder = true; strike(t); nextStrike = t + 9; }
     }
-    if (finalFigure.visible) {
-      finalFigure.rotation.y = Math.atan2(camera.position.x - finalFigure.position.x, camera.position.z - finalFigure.position.z);
-      // it drifts slowly toward you
-      const fp = roadPoint(END + 16 - Math.min(te - 2.6, 8) * 0.9, tmpC);
-      finalFigure.position.copy(fp);
-    }
+  }
+  for (const ln of GATE.lanterns) {
+    const f = 0.8 + 0.12 * Math.sin(t * 11 + ln.ph) + 0.08 * Math.sin(t * 27 + ln.ph * 2);
+    ln.light.intensity = 10 * f; ln.glass.material.color.setRGB(5 * f, 3.4 * f, 1.6 * f);
+  }
+  for (const tc of DOOR.torches) {
+    const f = 0.75 + 0.15 * Math.sin(t * 13 + tc.ph) + 0.1 * Math.sin(t * 29 + tc.ph * 3);
+    const surge = state === 'end' && te > UNVEIL ? 1 + 1.6 * Math.exp(-(te - UNVEIL) * 1.3) : 1;
+    tc.light.intensity = 30 * f * surge; tc.flame.scale.set(1, (0.8 + f * 0.4) * surge, 1);
+  }
+  if (state === 'end') {
+    const kk = te > UNVEIL ? 1 : smooth(UNVEIL - 6, UNVEIL, te) * 0.3;
+    DOOR.key.intensity = 55 + 60 * kk + (te > UNVEIL ? 160 * Math.exp(-(te - UNVEIL) * 1.4) : 0);
   }
   if (sound.ctx && t > nextHowl) { sound.howl(); nextHowl = t + 16 + Math.random() * 22; }
 
   // --- camera: rides the road behind the car, gazing toward the castle
+  if (!doorShot) {
   const endK = state === 'end' ? smooth(0, 5, t - endT) : 0;
   const back = roadPoint(Math.max(s - 9 - 4 * smooth(760, END, s), -50), tmpC);
   camTarget.copy(back); camTarget.y += 3.3 + smooth(760, END, s) * 1.2 + endK * 1.5;
@@ -1215,14 +2047,48 @@ function frame() {
   const yaw = yawF + dy * w;
   const pitch = Math.min(lerp(pitchF, pitchC, Math.max(w, 0.5)), pitchCar);
   lookWant.set(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch)).multiplyScalar(60).add(camTarget);
+  if (state === 'end') {
+    // the camera is drawn up toward the castle and zooms in on its door
+    lookWant.lerp(DOOR.lookFar, smooth(3.4, 5.4, te));
+    const zk = smooth(3.8, 7.6, te);
+    camera.fov = lerp(camera.fov, 12, zk * zk * (3 - 2 * zk)); camera.updateProjectionMatrix();
+  }
   if (snapCamera) { camera.position.copy(camTarget); lookCur.copy(lookWant); prevCam.copy(camTarget); snapCamera = false; }
   camera.position.lerp(camTarget, 1 - Math.exp(-dt * 3.2));
   lookCur.lerp(lookWant, 1 - Math.exp(-dt * 2.2));
   camera.lookAt(lookCur);
+  if (state === 'end' && te > 0.7) {
+    const sh = GATE.shot;
+    camera.position.copy(sh.pos).lerp(sh.pos2, smooth(0.7, 11, te));
+    // turn toward the castle at an even angular rate (blend directions, not target points)
+    const dA = tmpA.copy(sh.look).sub(camera.position).normalize();
+    const dB = tmpB.copy(trailerOv.zoomTo || DOOR.lookFar).sub(camera.position).normalize();
+    const tk = smooth(7.6, 11.6, te);
+    lookCur.copy(dA.lerp(dB, tk).normalize()).multiplyScalar(60).add(camera.position);
+    // zoom at a constant perceived rate (interpolate the image scale, not the angle)
+    const zk = smooth(8.4, 12.9, te);
+    const tanA = Math.tan(THREE.MathUtils.degToRad(baseFov - 7) / 2), tanB = Math.tan(THREE.MathUtils.degToRad(12) / 2);
+    camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(tanA * Math.pow(tanB / tanA, zk))); camera.updateProjectionMatrix();
+    camera.lookAt(lookCur);
+  }
+  } else {
+    // the door shot: a slow push in as the thing comes out of the dark
+    const ds = trailerOv.ds ?? smooth(15.5, 32, te);
+    const snapZ = smooth(UNVEIL, UNVEIL + 0.45, te);
+    camera.fov = lerp(50, 42, ds) - 7 * snapZ; camera.updateProjectionMatrix();
+    const jolt = te > UNVEIL ? Math.exp(-(te - UNVEIL) * 5) * 0.045 : 0;
+    camera.position.copy(DOOR.W(tmpC.set(Math.sin(t * 0.3) * 0.04 + (Math.random() - 0.5) * jolt, lerp(2.2, 1.95, ds) + (Math.random() - 0.5) * jolt, lerp(17.5, 10.6, ds) - trailerOv.push)));
+    const head = DOOR.fig.userData.head.getWorldPosition(tmpB);
+    const look = DOOR.W(tmpA.set(0, lerp(4.6, 2.32, ds), lerp(5.5, 7.9, ds)));
+    lookCur.copy(look);
+    camera.lookAt(lookCur);
+    prevCam.copy(camera.position);
+  }
 
-  // --- moon light & shadows follow the car
-  moonLight.target.position.copy(p);
-  moonLight.position.copy(p).addScaledVector(MOON_LIGHT_DIR, 420);
+  // --- moon light & shadows follow the car (or the door)
+  camera.updateMatrixWorld();
+  if (camera.fov !== csmFov || camera.aspect !== csmAspect) { csmFov = camera.fov; csmAspect = camera.aspect; csm.updateFrustums(); }
+  csm.update();
   sky.position.copy(camera.position);
   skyMat.uniforms.uTime.value = t;
 
@@ -1281,20 +2147,123 @@ function frame() {
   U.uTime.value = t;
   if (state === 'intro') { U.uIris.value = 0; }
   else if (state === 'drive') { U.uIris.value = 1.6 * smooth(0, 2.8, t - startT); U.uIrisC.value.set(0.5, 0.5); }
-  else {
-    const te = t - endT;
-    const sp = tmpB.copy(castleLook).project(camera);
+  else if (!doorShot) {
+    const sp = tmpB.copy(trailerOv.zoomTo || DOOR.lookFar).project(camera);
     U.uIrisC.value.set(sp.x * 0.5 + 0.5, sp.y * 0.5 + 0.5);
-    U.uIris.value = lerp(1.6, 0.17, smooth(5, 8.5, te)) * (1 - smooth(10, 11.2, te));
-    if (te > 11.2 && !cardEl.classList.contains('show')) {
+    U.uIris.value = 1.6 * (1 - smooth(11.6, 13.0, te));
+  } else {
+    const sp = DOOR.fig.userData.head.getWorldPosition(tmpB).project(camera);
+    const k = smooth(30.5, 32.5, te);
+    U.uIrisC.value.set(lerp(0.5, sp.x * 0.5 + 0.5, k), lerp(0.5, sp.y * 0.5 + 0.5, k));
+    U.uIris.value = 1.6 * smooth(13.4, 14.8, te) * (1 - smooth(32.5, 34.5, te));
+    if (te > 35 && !cardEl.classList.contains('show')) {
       showCard(`<h1>Finis</h1><div class="orn">❦</div><div class="hint">press <b>space</b> or touch<br>to make the journey again</div>`, 0);
     }
   }
 
-  sound.update(state === 'drive' ? speed : 0);
+  sound.update(state === 'drive' ? speed : 0, doorShot);
   composer.render();
 }
-frame();
+// every lit material gets the cascaded-shadow shader patch
+{
+  const seen = new Set();
+  scene.traverse(o => {
+    const mats = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : [];
+    for (const m of mats) if ((m.isMeshStandardMaterial || m.isMeshPhongMaterial || m.isMeshLambertMaterial) && !seen.has(m)) { seen.add(m); csm.setupMaterial(m); }
+  });
+}
+// =====================================================================
+//  Trailer mode (?trailer): a scripted 10-second cut, stepped frame by frame
+//  for video capture (window.__trailerStep), with its soundtrack rendered offline
+//  from the same sound engine (window.__trailerAudio → base64 WAV).
+// =====================================================================
+const TRAILER_CARDS = {
+  title: `<div class="small">a symphony of night &amp; code</div><h1>Vibeferatu</h1><div class="orn">❦</div>`,
+  end: `<div class="small">this halloween&hellip;</div><h1>Vibeferatu</h1><div class="hint">something is waiting at the end of the road</div>`,
+};
+const SHOTS = [
+  { t0: 0.0, t1: 4.0, s: 60, v: 5, strikes: [1.6], fadeIn: 1.4 },          // a slow crawl through the valley
+  // one continuous shot: the gate creaks fully open, then the camera rises over the arch to the castle
+  { t0: 4.0, t1: 11.5, teKeys: [[4.0, 2.0], [11.5, 12.9]], gateT: [4.4, 8.0], strikes: [9.8], noFadeOut: true, zoomCastle: true },
+  { t0: 11.5, t1: 15.01, card: 'end' },
+];
+let trailerT = 0, trailerShot = -1;
+const trailerCastleAim = new V3(CX, castleBaseY + castleTopY * 0.5, CZ);   // the spires, above the gate's arch
+const trailerFade = document.createElement('div');
+trailerFade.style.cssText = 'position:fixed;inset:0;background:#000;opacity:0;pointer-events:none;z-index:9';
+function trailerSetup(t) {
+  let i = SHOTS.findIndex(x => t >= x.t0 && t < x.t1); if (i < 0) i = SHOTS.length - 1;
+  const sh = SHOTS[i];
+  if (i !== trailerShot) {
+    trailerShot = i; snapCamera = true;
+    for (const a of apparitions) { a.seen = false; a.f.visible = false; }
+    for (const k in endFx) endFx[k] = true; endFx.unveil = false;
+    flashes = []; nextStrike = Infinity; storyIdx = STORY.length; sputterT = -10;
+    if (sh.card) cardText.innerHTML = TRAILER_CARDS[sh.card];
+    if (sh.s !== undefined) { state = 'drive'; s = sh.s; startT = -100; GATE.set(0); DOOR.set(0); }
+    else if (sh.te !== undefined || sh.teKeys) { state = 'end'; s = END; speed = 0; endT = t - (sh.te ?? sh.teKeys[0][1]); }
+  }
+  if (sh.v) speed = sh.v;
+  if (sh.rate) endT = t - (sh.te + (t - sh.t0) * sh.rate);
+  if (sh.teKeys) {                                   // piecewise-linear ending clock
+    const K = sh.teKeys; let te = K[K.length - 1][1];
+    for (let j = 0; j < K.length - 1; j++) if (t <= K[j + 1][0]) { te = lerp(K[j][1], K[j + 1][1], (t - K[j][0]) / (K[j + 1][0] - K[j][0])); break; }
+    endT = t - te;
+  }
+  const u = (t - sh.t0) / (sh.t1 - sh.t0);
+  trailerOv.gate = sh.gate ? lerp(sh.gate[0], sh.gate[1], smooth(0, 1, u)) : sh.gateT ? smooth(sh.gateT[0], sh.gateT[1], t) : null;
+  trailerOv.ds = sh.ds ? lerp(sh.ds[0], sh.ds[1], u) : null;
+  trailerOv.push = sh.push ? lerp(sh.push[0], sh.push[1], u) : 0;
+  trailerOv.face = sh.face !== undefined ? sh.face : null;
+  trailerOv.hideFig = !!sh.hideFig;
+  trailerOv.zoomTo = sh.zoomCastle ? trailerCastleAim : null;
+  if (sh.unveil) UNVEIL = sh.unveil;
+  for (const st of sh.strikes || []) if (t >= st && t - 1 / 30 < st) strike(t);
+  const fin = sh.cutIn ? 1 : Math.min(1, (t - sh.t0) / (sh.fadeIn || 0.3));
+  const fout = sh.card || sh.noFadeOut ? 1 : Math.min(1, (sh.t1 - t) / 0.3);
+  trailerFade.style.opacity = sh.card ? '1' : String(1 - Math.max(0, Math.min(fin, fout)));
+  cardEl.style.opacity = sh.card ? String(Math.max(0, Math.min(1, (t - sh.t0) / 0.9, (15 - t) / 0.7))) : '0';
+}
+if (TRAILER) {
+  document.body.classList.add('trailer');
+  document.body.appendChild(trailerFade);
+  window.__trailerStep = i => { trailerT = i / 30; frame(); };
+  window.__trailerAudio = async () => {
+    const SR = 44100, LEN = 15.2;
+    const ctx = new OfflineAudioContext(2, Math.ceil(SR * LEN), SR);
+    sound.ctx = null; sound.on = true;
+    const ev = [], at = (tt, fn) => ev.push({ tt, fn });
+    at(0, () => { sound.start(ctx); sound.master.gain.value = 0.6; sound.og.gain.cancelScheduledValues(0); sound.og.gain.setValueAtTime(0, 0); sound.theme(); });
+    for (let x = 0; x < LEN; x += 0.1) {
+      const sh = SHOTS.find(q => x >= q.t0 && x < q.t1);
+      at(x + 0.01, () => sound.update(sh && sh.v ? sh.v * 0.3 : 0, !(sh && sh.v)));
+    }
+    at(1.7, () => sound.thunder(0.55));
+    at(4.6, () => sound.gateSqueal(3.4, false));   // the long squeal of the hinges (no clank)
+    at(8.5, () => sound.howl());
+    at(10.0, () => sound.thunder(0.7));
+    at(14.45, () => sound.master.gain.setTargetAtTime(0, ctx.currentTime, 0.22));
+    const q = 128 / SR, groups = new Map();
+    for (const e of ev) { const k = Math.round(e.tt / q); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(e.fn); }
+    (groups.get(0) || []).forEach(f => f());
+    for (const [k, fns] of groups) if (k > 0 && k * q < LEN - 0.01) ctx.suspend(k * q).then(() => { fns.forEach(f => f()); ctx.resume(); });
+    const buf = await ctx.startRendering();
+    // 16-bit PCM WAV
+    const n = buf.length, L = buf.getChannelData(0), Rr = buf.getChannelData(1);
+    const dv = new DataView(new ArrayBuffer(44 + n * 4));
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF'); dv.setUint32(4, 36 + n * 4, true); w(8, 'WAVE'); w(12, 'fmt '); dv.setUint32(16, 16, true);
+    dv.setUint16(20, 1, true); dv.setUint16(22, 2, true); dv.setUint32(24, SR, true); dv.setUint32(28, SR * 4, true);
+    dv.setUint16(32, 4, true); dv.setUint16(34, 16, true); w(36, 'data'); dv.setUint32(40, n * 4, true);
+    for (let i = 0; i < n; i++) {
+      dv.setInt16(44 + i * 4, Math.max(-1, Math.min(1, L[i])) * 32767, true);
+      dv.setInt16(46 + i * 4, Math.max(-1, Math.min(1, Rr[i])) * 32767, true);
+    }
+    const bytes = new Uint8Array(dv.buffer); let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(bin);
+  };
+} else frame();
 </script>
 </body>
 </html>
